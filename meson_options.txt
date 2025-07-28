@@ -1,0 +1,3 @@
+option('pg_config', type: 'string',
+    value: 'default',
+    description: 'pg_config absolute directory')
