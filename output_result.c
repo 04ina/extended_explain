@@ -1,5 +1,7 @@
 //#include "output_result.h"
 
+#include "include/output_result.h"
+
 #include "access/heapam.h"
 #include "access/relation.h"       
 #include "access/table.h"          
@@ -65,7 +67,7 @@ FillPathsTable(EERel *eerel)
 	estate = CreateExecutorState();
 
     /* Open the temporary table for writing */
-    rel = table_openrv(makeRangeVar("ee", "ee_result2", -1), RowExclusiveLock);
+    rel = table_openrv(makeRangeVar("ee", "result", -1), RowExclusiveLock);
 
     /* Get the tuple descriptor for the table */
     tupdesc = RelationGetDescr(rel);
@@ -143,6 +145,15 @@ FillPathsTable(EERel *eerel)
         values[7] = BoolGetDatum(eepath->is_del);
 		//nulls[7] = true;
 		//values[7] = (Datum) 0;
+        if (eerel->eref == NULL)
+        {
+            nulls[8] = true;
+            values[8] = (Datum) 0;
+        }
+        else
+        {
+            values[8] = CStringGetTextDatum(eerel->eref->aliasname);
+        }
 
 		oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 
