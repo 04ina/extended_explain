@@ -63,3 +63,6 @@ SELECT * FROM ee.result;
 ```
 
 Посредством [pg_path_tree_visualization](https://github.com/04ina/pg_path_tree_visualization) можно визуализировать представленную в таблице ee.result информацию.
+
+## Демо видео
+https://rutube.ru/video/private/69afe214c5b051d23f302c2742d8cb43/?p=Kl6r1nZqvODlZ0IUxboPXw
