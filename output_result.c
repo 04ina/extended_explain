@@ -57,8 +57,8 @@ FillPathsTable(EERel *eerel)
     Relation    rel;
     TupleDesc   tupdesc;
     HeapTuple   tuple;
-    Datum       values[8];
-    bool        nulls[8] = {false};
+    Datum       values[10];
+    bool        nulls[10] = {false};
     ListCell   *lc;
     EState     *estate;
     MemoryContext oldcontext;
@@ -112,6 +112,7 @@ FillPathsTable(EERel *eerel)
 		}
 		else if (eepath->nsub == 1)
 		{
+			nulls[3] = false;
 			values[3] = PointerGetDatum(construct_array(
 				(Datum[]){
 					Int64GetDatum(eepath->sub_eepath_1->id)
@@ -126,6 +127,7 @@ FillPathsTable(EERel *eerel)
 		}
 		else if (eepath->nsub == 2)
 		{
+			nulls[3] = false;
 			values[3] = PointerGetDatum(construct_array(
 				(Datum[]){
 					Int64GetDatum(eepath->sub_eepath_1->id),
@@ -152,8 +154,21 @@ FillPathsTable(EERel *eerel)
         }
         else
         {
+			nulls[8] = false;
             values[8] = CStringGetTextDatum(eerel->eref->aliasname);
         }
+
+		if (eepath->indexoid == 0)
+		{
+            nulls[9] = true;
+            values[9] = (Datum) 0;
+		}
+		else
+		{
+			nulls[9] = false;
+        	values[9] = ObjectIdGetDatum(eepath->indexoid);
+		}
+
 
 		oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
 

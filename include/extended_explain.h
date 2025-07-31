@@ -63,6 +63,8 @@ typedef struct EEPath
 	Cost		startup_cost;	/* cost expended before fetching any tuples */
 	Cost		total_cost;		/* total cost (assuming all tuples fetched) */
 
+	Oid 	indexoid;
+
 	bool is_del;
 } EEPath;
 

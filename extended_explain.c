@@ -104,7 +104,7 @@ ee_explain(Query *query, int cursorOptions,
 		   const char *queryString, ParamListInfo params,
 		   QueryEnvironment *queryEnv) 
 {
-	ListCell *br;	
+	ListCell *br;
 
 	global_ee_status = init_ee_status();
 
@@ -220,6 +220,12 @@ fill_eepath(EEPath *eepath, Path *path)
 	eepath->rows = path->rows;
 	eepath->startup_cost = path->startup_cost;
 	eepath->total_cost = path->total_cost;
+
+	if (path->type == T_IndexPath)
+		eepath->indexoid = ((IndexPath *) path)->indexinfo->indexoid;
+	else
+		eepath->indexoid = 0;
+
 }
 
 /*
@@ -314,10 +320,10 @@ ee_remember_path(RelOptInfo *parent_rel,
 
 	if (global_ee_status == NULL)
 		return;
-
+/*
 	if (eepath_exist(new_path) != NULL)
 		return;
-
+*/
 	old_ctx = MemoryContextSwitchTo(global_ee_status->ctx);
 
 	eerel = eerel_exist(parent_rel);
@@ -335,11 +341,12 @@ ee_remember_path(RelOptInfo *parent_rel,
 
 	switch (new_path->type)
 	{
-		case T_Path:
 		case T_IndexPath:
+		case T_Path:
 		case T_BitmapHeapPath:
 			eepath->nsub = 0;
 			eepath->level = global_ee_status->init_level;
+
 			break;
 		case T_SubqueryScanPath:
 		case T_ProjectionPath:

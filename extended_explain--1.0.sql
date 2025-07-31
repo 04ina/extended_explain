@@ -15,7 +15,8 @@ CREATE TABLE ee.result
 	total_cost float,
 	rows integer,
 	is_del bool,
-	rel_name text
+	rel_name text,
+	indexoid oid
 );
 
 CREATE FUNCTION ee_func()
