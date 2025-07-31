@@ -1,5 +1,11 @@
 ### Install
 
+Перед инсталяцией необходимо применить патч для postgres-а ветки REL_17_STABLE
+
+```sh
+git apply add_path_hook.patch
+```
+
 ## make
 ```sh
 make install
