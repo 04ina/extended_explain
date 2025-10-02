@@ -1,4 +1,4 @@
-project('buffercache_tools', ['c'])
+project('extended_explain', ['c'])
 
 pg_config = get_option('pg_config')
 
@@ -11,27 +11,27 @@ includedir_server = run_command(pg_config, '--includedir-server', check: true).s
 pkglibdir = run_command(pg_config, '--pkglibdir', check: true).stdout().strip()
 sharedir = run_command(pg_config, '--sharedir', check: true).stdout().strip()
 
-shared_module('buffercache_tools', 'buffercache_tools.c', 'buffercache_tools_internals.c',
+shared_module('extended_explain', 'extended_explain.c', 'output_result.c',
               include_directories: [includedir_server],
               install: true,
               install_dir: pkglibdir,
               name_prefix: '',
              )
 
-install_data('buffercache_tools.control',
-             'buffercache_tools--1.0.sql',
+install_data('extended_explain.control',
+             'extended_explain--1.0.sql',
              install_dir: sharedir / 'extension',
             )
 
-pg_regress = find_program('pg_regress',
-                          dirs: [pkglibdir / 'pgxs/src/test/regress']
-                         )
+# pg_regress = find_program('pg_regress',
+#                           dirs: [pkglibdir / 'pgxs/src/test/regress']
+#                          )
 
-regress_tests = ['buffer_processing_functions', 'change_func_buffers_coverage', 'read_page_into_buffer']
+# regress_tests = ['']
 
-test('regress',
-     pg_regress,
-     args: ['--bindir', bindir,
-            '--inputdir', meson.current_source_dir() / 'test',
-           ] + regress_tests,
-    )
+# test('regress',
+#      pg_regress,
+#      args: ['--bindir', bindir,
+#             '--inputdir', meson.current_source_dir() / 'test',
+#            ] + regress_tests,
+#     )

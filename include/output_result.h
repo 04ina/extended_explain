@@ -2,7 +2,8 @@
  *
  * output_result.h
  *
- * include/output_result.h
+ * IDENTIFICATION
+ *        include/output_result.h
  *
  *-------------------------------------------------------------------------
  */
@@ -12,6 +13,6 @@
 
 #include "extended_explain.h"
 
-void FillPathsTable(EERel *eerel);
+void insert_eerel_into_eepaths(EERel *eerel);
 
 #endif							/* EE_OUTPUT_RESULT_H */

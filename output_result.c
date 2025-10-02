@@ -1,21 +1,32 @@
-//#include "output_result.h"
+/*-------------------------------------------------------------------------
+ *
+ * output_result.c
+ *    Вывод результата работы расширения
+ * 
+ * На данный момент вывод осуществляется только посредством
+ * таблицы ee.paths. 
+ * 
+ *-------------------------------------------------------------------------
+ */
 
 #include "include/output_result.h"
 
 #include "access/heapam.h"
-#include "access/relation.h"       
-#include "access/table.h"          
-#include "access/htup_details.h"   
-#include "catalog/pg_type.h"       
-#include "nodes/makefuncs.h"       
-#include "utils/array.h"           
-#include "utils/builtins.h"        
-#include "utils/rel.h"             
-#include "executor/executor.h"     
+#include "access/relation.h"
+#include "access/table.h"
+#include "access/htup_details.h"
+#include "catalog/pg_type.h"
+#include "nodes/makefuncs.h"
+#include "utils/array.h"
+#include "utils/builtins.h"
+#include "utils/rel.h"
+#include "executor/executor.h"
 
-// ExplainNode????
+/*
+ * Получить название узла плана по его NodeTag
+ */
 static const char *
-EEPathTypeToString(NodeTag pathtype)
+nodetag_to_string(NodeTag pathtype)
 {
     switch (pathtype)
     {
@@ -50,9 +61,11 @@ EEPathTypeToString(NodeTag pathtype)
     }
 }
 
-
+/*
+ * Записывает все пути отношения eerel в таблицу ee.paths
+ */
 void
-FillPathsTable(EERel *eerel)
+insert_eerel_into_eepaths(EERel *eerel)
 {
     Relation    rel;
     TupleDesc   tupdesc;
@@ -61,13 +74,11 @@ FillPathsTable(EERel *eerel)
     bool        nulls[10] = {false};
     ListCell   *lc;
     EState     *estate;
-    MemoryContext oldcontext;
 
-	/* Create execution state */
 	estate = CreateExecutorState();
 
-    /* Open the temporary table for writing */
-    rel = table_openrv(makeRangeVar("ee", "result", -1), RowExclusiveLock);
+
+    rel = table_openrv(makeRangeVar("ee", "paths", -1), RowExclusiveLock);
 
     /* Get the tuple descriptor for the table */
     tupdesc = RelationGetDescr(rel);
@@ -77,32 +88,11 @@ FillPathsTable(EERel *eerel)
     {
         EEPath    *eepath = (EEPath *) lfirst(lc);
         
-        /* If EEPath has child paths, prepare the array 
-        if (eepath->children)  
-        {
-            ListCell   *lc2;
-            
-            foreach(lc2, eepath->children)
-            {
-                EEPath    *child = (EEPath *) lfirst(lc2);
-                astate = accumArrayResult(astate, 
-                                        CStringGetTextDatum(EEPathTypeToString(child->pathtype)),
-                                        false,
-                                        TEXTOID,
-                                        CurrentMemoryContext);
-            }
-        }
-		*/
-        /* Fill the values array */
 		values[0] = Int32GetDatum(eepath->level);
 
-        //values[1] = CStringGetTextDatum(eepath->path_name);
 		values[1] = Int64GetDatum(eepath->id);
 
-        values[2] = CStringGetTextDatum(EEPathTypeToString(eepath->pathtype));
-
-       // values[3] = astate ? makeArrayResult(astate, CurrentMemoryContext) 
-         //                 : PointerGetDatum(construct_empty_array(TEXTOID));
+        values[2] = CStringGetTextDatum(nodetag_to_string(eepath->pathtype));
 
 		if (eepath->nsub == 0)
 		{
@@ -145,8 +135,7 @@ FillPathsTable(EERel *eerel)
         values[5] = Float8GetDatum(eepath->total_cost);
         values[6] = Int64GetDatum(eepath->rows);
         values[7] = BoolGetDatum(eepath->is_del);
-		//nulls[7] = true;
-		//values[7] = (Datum) 0;
+
         if (eerel->eref == NULL)
         {
             nulls[8] = true;
@@ -169,18 +158,13 @@ FillPathsTable(EERel *eerel)
         	values[9] = ObjectIdGetDatum(eepath->indexoid);
 		}
 
-
-		oldcontext = MemoryContextSwitchTo(estate->es_query_cxt);
-
-        /* Create and insert the tuple */
+        /* Создание и вставка тапла */
         tuple = heap_form_tuple(tupdesc, values, nulls);
         simple_heap_insert(rel, tuple);
         heap_freetuple(tuple);
 
-    	MemoryContextSwitchTo(oldcontext);
     }
 
-    /* Clean up */
     FreeExecutorState(estate);
     table_close(rel, RowExclusiveLock);
 }

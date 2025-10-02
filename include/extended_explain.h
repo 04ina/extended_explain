@@ -1,7 +1,10 @@
 /*-------------------------------------------------------------------------
  *
  * extended_explain.h
- * 
+ *
+ * IDENTIFICATION
+ *        include/extended_explain.h
+ *
  *-------------------------------------------------------------------------
  */
 
@@ -18,95 +21,190 @@
 #include "catalog/pg_type.h"
 #include "optimizer/planner.h"
 #include "commands/explain.h"
-
-#include "optimizer/paths.h"          // Для add_path_hook_type, set_rel_pathlist_hook_type и др.
-#include "commands/explain.h"        // Для ExplainOneQuery_hook_type
-#include "optimizer/planmain.h"      // Для create_upper_paths_hook_type
+#include "optimizer/paths.h"
+#include "commands/explain.h"
+#include "optimizer/planmain.h"
 #include "optimizer/pathnode.h"
 #include "optimizer/planner.h"
 
-typedef struct EEStatus 
+/*
+ * EEState определяет основные переменные расширения extended_explain
+ */
+typedef struct EEState
 {
 	MemoryContext ctx; 
 
+	/* Список eerel отношений */
 	List *eerel_list;
-	List *eepath_list;
-	List *eesubquery_list;
 
+	/* Список eepath путей */
+	List *eepath_list;
+
+	/* 
+	 * Счетчик путей для однозначной идентификации путей 
+	 *
+	 * Не путать с иденификацией для поиска eepath по path
+	 */
 	int64 eepath_counter;
+
+	/* Определяет минимальный уровень текущего обрабатываемого подзапроса.
+	 * 
+     * Для первого обрабатываемого подзапроса равен единице. Для последующих 
+	 * подзапросов равен наибольшему уровню предыдущего подзапроса плюс один.
+	 */
 	int64 init_level;
-} EEStatus;
+} EEState;
 
-typedef struct EERel 
-{
-	RelOptInfo *roi_pointer;
-
-	Alias *eref;
-
-	int level;
-	List *eepath_list;
-} EERel;
-
+/*
+ * EEPath -- информация об исходном пути 
+ *
+ * Данная структура заполняется посредством хука add_path_hook.
+ * 
+ * Причем наибольшую сложность при заполнении представляет связывание родительского 
+ * пути с дочерними. Исходный родительский путь содержит указатели на дочерние 
+ * пути, а для связи соответствующих eepath путей необходимо некое однозначное 
+ * соответствие между исходным дочерним путем и дочерним eepath путем. 
+ * 
+ *  
+ * Для поиска по исходному пути соответствующего eepath используется перебор 
+ * всех путей из global_ee_state->eepath_list: если указатель на исходный путь 
+ * и значение eepath->path_pointer, а также соответствующие кардинальности совпадают, 
+ * значит пути соответствуют друг другу. Однако мы не можем полагаться лишь на 
+ * указатель на исходный путь, поскольку функция add_path может по указателю удалить 
+ * исходный путь, а затем дать этот указатель уже другому пути. Воизбежании этого 
+ * есть второй критерий в виде кардинальности, однако и в этом случае однозначная 
+ * идентификации не гарантируется, вследствие чего необходимо разработать более 
+ * продвинутый метод однозначной идентификации.
+ *
+ */
 typedef struct EEPath 
 {
+	/* 
+	 * Указатель на структуру исходного пути.
+	 * 
+	 * Является частью составного однозначного идентификатора, который позволяет 
+	 * по исходному пути определить соответствующий eepath.
+	 */
 	Path *path_pointer;
 
+	/* 
+     * Однозначный идентификатор eepath	пути в пределах одного EXPLAIN
+	 */
 	int64 id;
+
+	/* Тип пути, наследуемый от исходного пути */
 	NodeTag	pathtype;
+
+	/* 
+	 * Уровень пути. Необходим для иерархии путей в таблице ee.paths (может быть полезно при визуализации).
+	 * В дальнейшем планируется отказаться от данного уровня в пользу иерархии на основе принадлежности к
+	 * конкретным отношениям и запросам/подзапросам.
+	 *
+	 */
 	int level;
 
+	/* Количество дочерних путей */
 	int nsub;
+
+	/* Указатели на дочерние пути */
 	struct EEPath *sub_eepath_1;
 	struct EEPath *sub_eepath_2;
 
-	Cardinality rows;			/* estimated number of result tuples */
-	Cost		startup_cost;	/* cost expended before fetching any tuples */
-	Cost		total_cost;		/* total cost (assuming all tuples fetched) */
+	/* Стоимости и кардинальность */
+	Cardinality rows;
+	Cost		startup_cost;
+	Cost		total_cost;
 
+	/* Oid индекса, который был использован при чтении таблицы */
 	Oid 	indexoid;
 
+	/* Был ли путь отфильтрован функцией add_path */
 	bool is_del;
 } EEPath;
 
-typedef struct EESubQuery
+/* 
+ * Информация об исходном отношении. 
+ *  
+ * Заполняется посредством add_path_hook, поскольку данный хук
+ * предоставляет доступ к структуре RelOptInfo. 
+ * 
+ * Если же данное отношение является базовым, то структура EERel
+ * дозаполняется информацией из структуры RangeTblEntry посредством 
+ * хука set_rel_pathlist_hook, который вызывается после обработки всех путей отношения. 
+ * На данный момент из RangeTblEntry берется лишь название базового отношения (Alias).
+ */
+typedef struct EERel 
 {
-	PlannerInfo *PlannerInfo_pointer;
+	/* 
+	 * Указатель на RelOptInfo отношения. В отличие от EEPath, указатель на RelOptInfo
+	 * является однозначным идентификатором для отношения. 
+	 */
+	RelOptInfo *roi_pointer;
 
-	List *eerel_list;
+	/*
+     * Название отношения. На данный момент существует лишь для базовых отношений	
+	 */
+	Alias *eref;
 
-} EESubQuery;
+	/* 
+     * Список путей, принадлежащих данному отношению. 
+     *
+	 * Позволяет определить принадлежность путей к конкретному отношению 
+	 * 
+	 * Также используется при выводе путей в сгруппированом виде 
+	 * (все пути, принадлежащие одному отношению, расположены рядом в таблице ee.paths) 
+	 */
+	List *eepath_list;
+} EERel;
+
+/*
+ * Типы PathWithOneSubPath и PathWithTwoSubPaths и макросы GET_SUB_PATH, 
+ * GET_OUTER_PATH, GET_INNER_PATH позволяют обращаться к дочерним путям.
+ */
+typedef struct PathWithOneSubPath
+{
+	Path path;
+	Path *subpath;
+} PathWithOneSubPath;
+
+typedef JoinPath PathWithTwoSubPaths;
+
+#define GET_SUB_PATH(path) (((PathWithOneSubPath *) path)->subpath)
+#define GET_OUTER_PATH(path) (((PathWithTwoSubPaths *) path)->outerjoinpath)
+#define GET_INNER_PATH(path) (((PathWithTwoSubPaths *) path)->innerjoinpath)
 
 /*-------------------------------------------------------------------------
- * 								function Headers 
+ * 								Заголовки функций 
  *-------------------------------------------------------------------------
  */
 
-extern void ee_remember_path(RelOptInfo *parent_rel, 
-							Path *new_path,
-							bool accept_new,
-							int insert_at);
+extern void ee_add_path_hook(RelOptInfo *parent_rel, 
+							 Path *new_path);
 
 extern void ee_explain(Query *query, int cursorOptions,
 					   IntoClause *into, ExplainState *es,
 					   const char *queryString, ParamListInfo params,
 					   QueryEnvironment *queryEnv);
 
-extern void ee_remember_join_pathlist(PlannerInfo *root,
-									  RelOptInfo *joinrel,
-									  RelOptInfo *outerrel,
-									  RelOptInfo *innerrel,
-									  JoinType jointype,
-									  JoinPathExtraData *extra);
-
 extern void ee_remember_rel_pathlist(PlannerInfo *root,
 									  RelOptInfo *rel,
 									  Index rti,
 									  RangeTblEntry *rte);
 
-extern void ee_get_upper_paths_hook(PlannerInfo *root,
-									UpperRelationKind stage,
-									RelOptInfo *input_rel,
-									RelOptInfo *output_rel,
-									void *extra);
+extern EEState *init_ee_state(void);
+extern void delete_ee_state(EEState *ee_state);
+
+extern void add_eepath_into_eerel(EERel *eerel, EEPath *eepath);
+
+extern EEPath *create_eepath(Path *new_path, EERel *eerel);
+extern int get_subpath_num(Path *path);
+
+extern EERel *init_eerel(void);
+extern EERel *search_eerel(RelOptInfo *roi);
+extern void fill_eerel(EERel *eerel, RelOptInfo *roi);
+
+extern EEPath *init_eepath(void);
+extern EEPath *search_eepath(Path *path);
+extern void  fill_eepath(EEPath *eepath, Path *path);
 
 #endif  /* EXTENDED_EXPLAIN_H */
