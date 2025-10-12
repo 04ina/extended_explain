@@ -1,15 +1,15 @@
-From f0f70ac5982ef61b57a8130d558768053e0f0f07 Mon Sep 17 00:00:00 2001
+From bed51b8b9cd874bbf4202d0bfcf3e9372cd4e721 Mon Sep 17 00:00:00 2001
 From: 04ina <o4inaDev@yandex.ru>
-Date: Thu, 31 Jul 2025 12:42:08 +0700
-Subject: [PATCH] add add_path_hook
+Date: Mon, 13 Oct 2025 03:39:11 +0700
+Subject: [PATCH] Add add_path_hook functionality
 
 ---
  src/backend/optimizer/util/pathnode.c | 5 +++++
- src/include/optimizer/pathnode.h      | 6 ++++++
- 2 files changed, 11 insertions(+)
+ src/include/optimizer/pathnode.h      | 4 ++++
+ 2 files changed, 9 insertions(+)
 
 diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
-index c42742d2c7b..68810d008be 100644
+index c42742d2c7..ea2583e722 100644
 --- a/src/backend/optimizer/util/pathnode.c
 +++ b/src/backend/optimizer/util/pathnode.c
 @@ -46,6 +46,8 @@ typedef enum
@@ -26,24 +26,22 @@ index c42742d2c7b..68810d008be 100644
  	}
  
 +	if (add_path_hook)
-+		(*add_path_hook) (parent_rel, new_path, accept_new, insert_at);
++		(*add_path_hook) (parent_rel, new_path);
 +
  	if (accept_new)
  	{
  		/* Accept the new path: insert it at proper place in pathlist */
 diff --git a/src/include/optimizer/pathnode.h b/src/include/optimizer/pathnode.h
-index 112e7c23d4e..5dfb2b3b0da 100644
+index 112e7c23d4..ba42b9b7ad 100644
 --- a/src/include/optimizer/pathnode.h
 +++ b/src/include/optimizer/pathnode.h
-@@ -17,6 +17,12 @@
+@@ -17,6 +17,10 @@
  #include "nodes/bitmapset.h"
  #include "nodes/pathnodes.h"
  
 +/* Hook for plugins to get control in add_path_hook() */
 +typedef void (*add_path_hook_type)(RelOptInfo *parent_rel,
-+								   Path *new_path,
-+								   bool accept_new,
-+								   int insert_at);
++								   Path *new_path);
 +extern PGDLLIMPORT add_path_hook_type add_path_hook;
  
  /*
