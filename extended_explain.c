@@ -3,27 +3,27 @@
  * extended_explain.c
  *
  *    Перехват и обработка путей
- * 
+ *
  * # TODO:
  *
- * 1. В вывод добавить идентификаторы отношений и подзапросов. Это будет 
+ * 1. В вывод добавить идентификаторы отношений и подзапросов. Это будет
  *    полезно при объединении путей и планов не по уровням, а по
- *    принадлежности к тем или иным отношениями и подзапросам. В таком 
+ *    принадлежности к тем или иным отношениями и подзапросам. В таком
  *    случае механизм уровней можно упразднить.
  *
- * 2. Создать структуру для запросов/подзапросов. Благодаря этому можно 
+ * 2. Создать структуру для запросов/подзапросов. Благодаря этому можно
  *    будет упразднить глобальные списки путей и отношений в EEState.
- *    Поиск путей и отношений посредством функций search_eepath() и 
- *    search_eerel() соответственно можно будет производит в локальных 
- *    списках в структуре запросов/подзапросов. Также функцию 
- *    insert_eerel_into_eepaths() необходимо переработать -- она должна 
+ *    Поиск путей и отношений посредством функций search_eepath() и
+ *    search_eerel() соответственно можно будет производит в локальных
+ *    списках в структуре запросов/подзапросов. Также функцию
+ *    insert_eerel_into_eepaths() необходимо переработать -- она должна
  *    вызываться не для конкретного отношения, а для запроса/подзапроса.
  *
- * 3. Необходим более надежный однозначный идентификатор для eepath. 
- *    На данный момент при поиске eepath по соответствующему пути происходит 
- *    по условию "eepath->path_pointer == path && eepath->rows == path->rows" 
+ * 3. Необходим более надежный однозначный идентификатор для eepath.
+ *    На данный момент при поиске eepath по соответствующему пути происходит
+ *    по условию "eepath->path_pointer == path && eepath->rows == path->rows"
  *    (функция search_eepath), которое не гарантирует однозначную идентификацию.
- * 
+ *
  *-------------------------------------------------------------------------
  */
 
@@ -32,23 +32,23 @@
 
 PG_MODULE_MAGIC;
 
-/* 
- * Хуки для перехвата путей 
+/*
+ * Хуки для перехвата путей
  */
 static ExplainOneQuery_hook_type prev_ExplainOneQuery_hook = NULL;
 static add_path_hook_type prev_add_path_hook = NULL;
 static set_rel_pathlist_hook_type prev_set_rel_pathlist_hook = NULL;
 
-/* 
+/*
  * global_ee_state сохраняет переменные расширения,
  * необходимые для обработки одного EXPLAIN запроса.
- * 
+ *
  * Инициализируется каждый раз при вызове EXPLAIN.
  */
-EEState *global_ee_state = NULL;
+EEState    *global_ee_state = NULL;
 
-void 
-_PG_init(void) 
+void
+_PG_init(void)
 {
 	prev_ExplainOneQuery_hook = ExplainOneQuery_hook;
 	ExplainOneQuery_hook = ee_explain;
@@ -65,46 +65,46 @@ _PG_init(void)
  * ----------------------------------------------------------------
  */
 
-/* 
- * Инициализация глобального состояния 
+/*
+ * Инициализация глобального состояния
  */
 EEState *
 init_ee_state(void)
 {
-	EEState *ee_state; 
+	EEState    *ee_state;
 
-	ee_state = (EEState *) palloc0(sizeof(EEState)); 
+	ee_state = (EEState *) palloc0(sizeof(EEState));
 
 	ee_state->ctx = AllocSetContextCreate(TopMemoryContext,
-										   "extended explain context",
-										   ALLOCSET_DEFAULT_SIZES);
-	
+										  "extended explain context",
+										  ALLOCSET_DEFAULT_SIZES);
+
 	ee_state->eerel_list = NIL;
 	ee_state->eepath_list = NIL;
-		
+
 	ee_state->eepath_counter = 1;
 	ee_state->init_level = 1;
 	return ee_state;
 }
 
-/* 
- * Удаление глобального состояния 
+/*
+ * Удаление глобального состояния
  */
-void 
-delete_ee_state(EEState *ee_state)
+void
+delete_ee_state(EEState * ee_state)
 {
-	// а надо ли?
-    if (ee_state->eepath_list)
-    {
-        list_free_deep(ee_state->eerel_list);
-        ee_state->eerel_list = NIL;
-    }
-    
-    if (ee_state->eerel_list)
-    {
-        list_free_deep(ee_state->eerel_list);
-        ee_state->eepath_list = NIL;
-    }
+	/* а надо ли? */
+	if (ee_state->eepath_list)
+	{
+		list_free_deep(ee_state->eerel_list);
+		ee_state->eerel_list = NIL;
+	}
+
+	if (ee_state->eerel_list)
+	{
+		list_free_deep(ee_state->eerel_list);
+		ee_state->eepath_list = NIL;
+	}
 
 	MemoryContextReset(ee_state->ctx);
 
@@ -112,17 +112,17 @@ delete_ee_state(EEState *ee_state)
 }
 
 /* ----------------------------------------------------------------
- *				Функции-обработчики хуков 
+ *				Функции-обработчики хуков
  * ----------------------------------------------------------------
  */
 
-void 
+void
 ee_explain(Query *query, int cursorOptions,
 		   IntoClause *into, ExplainState *es,
 		   const char *queryString, ParamListInfo params,
-		   QueryEnvironment *queryEnv) 
+		   QueryEnvironment *queryEnv)
 {
-	ListCell *br;
+	ListCell   *br;
 
 	global_ee_state = init_ee_state();
 
@@ -131,7 +131,7 @@ ee_explain(Query *query, int cursorOptions,
 
 	foreach(br, global_ee_state->eerel_list)
 	{
-		EERel *rel = (EERel *) lfirst(br); 
+		EERel	   *rel = (EERel *) lfirst(br);
 
 		insert_eerel_into_eepaths(rel);
 	}
@@ -141,15 +141,15 @@ ee_explain(Query *query, int cursorOptions,
 }
 
 /*
- * Функция для обработки хука add_path_hook.  Запоминает отношения и пути, 
- * которые были рассмотрены оптимизатором при поиске наилучшего плана. 
+ * Функция для обработки хука add_path_hook.  Запоминает отношения и пути,
+ * которые были рассмотрены оптимизатором при поиске наилучшего плана.
  */
-void 
+void
 ee_add_path_hook(RelOptInfo *parent_rel,
 				 Path *new_path)
 {
 
-	EERel *eerel;
+	EERel	   *eerel;
 	MemoryContext old_ctx;
 
 	if (global_ee_state == NULL)
@@ -161,7 +161,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 
 	if (eerel == NULL)
 	{
-		eerel = init_eerel();	
+		eerel = init_eerel();
 		fill_eerel(eerel, parent_rel);
 	}
 
@@ -175,20 +175,20 @@ ee_add_path_hook(RelOptInfo *parent_rel,
  *
  * Вызывается при окончании заполнения списка путей базового отношения,
  * необходима для получения названия отношения (например таблица или результат соединения).
- * 
+ *
  * Во время сохранения путей название отношения не получить, поскольку из функции add_path()
  * невозможно выудить RangeTblEntry.
  */
-void 
+void
 ee_remember_rel_pathlist(PlannerInfo *root,
 						 RelOptInfo *rel,
 						 Index rti,
 						 RangeTblEntry *rte)
 {
 	MemoryContext old_ctx;
-	EERel *eerel;
+	EERel	   *eerel;
 
-	if (global_ee_state == NULL)	
+	if (global_ee_state == NULL)
 		return;
 
 	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
@@ -203,17 +203,18 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 }
 
 /* ----------------------------------------------------------------
- *				Функции для работы с eepath 
+ *				Функции для работы с eepath
  * ----------------------------------------------------------------
  */
 
 /*
- * Функция инициализации eepath пути 
+ * Функция инициализации eepath пути
  */
 EEPath *
 init_eepath(void)
 {
-	EEPath *eepath = (EEPath *) palloc0(sizeof(EEPath));
+	EEPath	   *eepath = (EEPath *) palloc0(sizeof(EEPath));
+
 	global_ee_state->eepath_list = lappend(global_ee_state->eepath_list, eepath);
 	eepath->id = global_ee_state->eepath_counter++;
 
@@ -221,26 +222,28 @@ init_eepath(void)
 }
 
 /*
- * Функция поиска пути eepath, соответствующего исходному пути path.  
+ * Функция поиска пути eepath, соответствующего исходному пути path.
  *
  * Если функция не нашла путь, то она вернет NULL.
- * 
+ *
  * TODO:
  * 1. На данный момент поиск реализован перебором списка global_ee_state->eepath_list.
  * В будущем имеет смысл использовать более быстрый алгоритм.
- * 
+ *
  * 2. Требуется более надежная идентификация путей.
  */
 EEPath *
 search_eepath(Path *path)
 {
-	ListCell *cl;
-	foreach (cl, global_ee_state->eepath_list)	
+	ListCell   *cl;
+
+	foreach(cl, global_ee_state->eepath_list)
 	{
-		EEPath *eepath = (EEPath *) lfirst(cl);
+		EEPath	   *eepath = (EEPath *) lfirst(cl);
+
 		if (eepath->path_pointer == path && eepath->rows == path->rows)
 		{
-			return eepath;	
+			return eepath;
 		}
 	}
 	return NULL;
@@ -249,8 +252,8 @@ search_eepath(Path *path)
 /*
  * Функция заполнения пути eepath
  */
-void 
-fill_eepath(EEPath *eepath, Path *path)
+void
+fill_eepath(EEPath * eepath, Path *path)
 {
 	eepath->path_pointer = path;
 	eepath->pathtype = path->pathtype;
@@ -269,12 +272,12 @@ fill_eepath(EEPath *eepath, Path *path)
 }
 
 /*
- * Функция получения количества возможных дочерних путей у указанного пути. 
+ * Функция получения количества возможных дочерних путей у указанного пути.
  */
 int
 get_subpath_num(Path *path)
 {
-	int subpath_num;
+	int			subpath_num;
 
 	switch (nodeTag(path))
 	{
@@ -308,58 +311,69 @@ get_subpath_num(Path *path)
 
 /*
  * create_eepath -- функция сохранения пути Path в путь EEPath
- * 
+ *
  * Для создания необходим исходный путь из планировщика и EERel -- отношение со списком eepath путей
- * 
+ *
  */
 EEPath *
-create_eepath(Path *new_path, EERel *eerel)
+create_eepath(Path *new_path, EERel * eerel)
 {
-	EEPath *eepath;
+	EEPath	   *eepath;
 
-	/* 
-	 * Находим соответствующее EERel отношение, если оно не было указано в качестве аргумента 
+	/*
+	 * Находим соответствующее EERel отношение, если оно не было указано в качестве аргумента
 	 *
-	 * Предполагается, что если eerel не указан, то он уже был создан ранее.
+	 * Предполагается, что если eerel не указан, то он уже был создан
+	 * ранее.
 	 */
 	if (eerel == NULL)
 		eerel = search_eerel(new_path->parent);
 
-	/* Инициализируем и заполняем eepath характеристиками пути new_path */
+	/*
+	 * Инициализируем и заполняем eepath характеристиками пути
+	 * new_path
+	 */
 	eepath = init_eepath();
 	fill_eepath(eepath, new_path);
 
-	/* Добавляем eepath в список путей отношения eerel*/
+	/*
+	 * Добавляем eepath в список путей отношения
+	 * eerel
+	 */
 	eerel->eepath_list = lappend(eerel->eepath_list, eepath);
 
-	/* Получаем количество возможных дочерних путей */
+	/*
+	 * Получаем количество возможных дочерних путей
+	 */
 	eepath->nsub = get_subpath_num(new_path);
 
-	/* 
-	 * Связываем eepath с дочерними путями, если они есть  
-	 */	
+	/*
+	 * Связываем eepath с дочерними путями, если они есть
+	 */
 	switch (eepath->nsub)
 	{
-		case 0: /* Дочерних путей нет */
+		case 0:					/* Дочерних путей нет */
 			eepath->level = global_ee_state->init_level;
 			break;
-		case 1: /* Дочерний путь один */
-			/* Связываем eepath с дочерним путем*/
+		case 1:					/* Дочерний путь один */
+			/* Связываем eepath с дочерним путем */
 			eepath->sub_eepath_1 = search_eepath(GET_SUB_PATH(new_path));
 
-			/* 
-			 * Если мы не находим дочерний узел в списке, значит он не был обработан функцией add_path,
-			 * а значит и хуком ee_remember_path.  В таком случае создаем дочерний путь отдельно.
+			/*
+			 * Если мы не находим дочерний узел в
+			 * списке, значит он не был обработан функцией
+			 * add_path, а значит и хуком ee_remember_path.  В таком случае создаем дочерний путь
+			 * отдельно.
 			 */
 			if (eepath->sub_eepath_1 == NULL)
 				eepath->sub_eepath_1 = create_eepath(GET_SUB_PATH(new_path), NULL);
 
 			eepath->level = eepath->sub_eepath_1->level + 1;
 			if (new_path->type == T_SubqueryScanPath)
-				global_ee_state->init_level = eepath->level + 1;	
+				global_ee_state->init_level = eepath->level + 1;
 			break;
-		case 2: /* Два дочерних пути */
-			/* Связываем eepath с дочернии путями*/
+		case 2:					/* Два дочерних пути */
+			/* Связываем eepath с дочернии путями */
 			eepath->sub_eepath_1 = search_eepath(GET_OUTER_PATH(new_path));
 			if (eepath->sub_eepath_1 == NULL)
 				eepath->sub_eepath_1 = create_eepath(GET_OUTER_PATH(new_path), NULL);
@@ -376,7 +390,7 @@ create_eepath(Path *new_path, EERel *eerel)
 }
 
 /* ----------------------------------------------------------------
- *				Функции для работы с eerel 
+ *				Функции для работы с eerel
  * ----------------------------------------------------------------
  */
 
@@ -386,7 +400,8 @@ create_eepath(Path *new_path, EERel *eerel)
 EERel *
 init_eerel(void)
 {
-	EERel *eerel = (EERel *) palloc0(sizeof(EERel));
+	EERel	   *eerel = (EERel *) palloc0(sizeof(EERel));
+
 	global_ee_state->eerel_list = lappend(global_ee_state->eerel_list, eerel);
 	eerel->eref = NULL;
 
@@ -394,37 +409,39 @@ init_eerel(void)
 }
 
 /*
- * Функция поиска eerel по структуре RelOptInfo 
+ * Функция поиска eerel по структуре RelOptInfo
  *
  * Если функция не нашла отношение, то она вернет NULL.
- * 
+ *
  * TODO:
  * Реализовать более быстрый алгоритм поиска
  */
 EERel *
 search_eerel(RelOptInfo *roi)
 {
-	ListCell *cell;
-	foreach (cell, global_ee_state->eerel_list)	
+	ListCell   *cell;
+
+	foreach(cell, global_ee_state->eerel_list)
 	{
-		EERel *eerel = (EERel *) lfirst(cell);
+		EERel	   *eerel = (EERel *) lfirst(cell);
+
 		if (eerel->roi_pointer == roi)
 		{
-			return eerel;	
+			return eerel;
 		}
 	}
 	return NULL;
 }
 
 /*
- * Функция заполнения отношения eerel  
+ * Функция заполнения отношения eerel
  *
  * roi_pointer является однозначным идентификатором eerel отношения,
  * поскольку отношения не могут удалиться в процессе перебора путей.
- *  
+ *
  */
-void 
-fill_eerel(EERel *eerel, RelOptInfo *roi)
+void
+fill_eerel(EERel * eerel, RelOptInfo *roi)
 {
 	eerel->roi_pointer = roi;
 }

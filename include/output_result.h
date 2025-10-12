@@ -13,6 +13,6 @@
 
 #include "extended_explain.h"
 
-void insert_eerel_into_eepaths(EERel *eerel);
+void		insert_eerel_into_eepaths(EERel * eerel);
 
 #endif							/* EE_OUTPUT_RESULT_H */
