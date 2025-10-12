@@ -42,7 +42,12 @@ ninja install
 
 ### Создание расширения
 
-После инсталляции создаем расширение посредством терминального клиента psql.
+Добавляем расширение в shared_preload_libraries в конфигурационном файле postgresql.conf:
+```
+shared_preload_libraries = 'extended_explain'
+```
+
+Далее создаем расширение посредством терминального клиента psql.
 ```sql
 CREATE EXTENSION extended_explain;
 ```
