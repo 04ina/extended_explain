@@ -96,14 +96,14 @@ delete_ee_state(EEState * ee_state)
 	/* а надо ли? */
 	if (ee_state->eepath_list)
 	{
-		list_free_deep(ee_state->eerel_list);
-		ee_state->eerel_list = NIL;
+		list_free_deep(ee_state->eepath_list);
+		ee_state->eepath_list = NIL;
 	}
 
 	if (ee_state->eerel_list)
 	{
 		list_free_deep(ee_state->eerel_list);
-		ee_state->eepath_list = NIL;
+		ee_state->eerel_list = NIL;
 	}
 
 	MemoryContextReset(ee_state->ctx);
