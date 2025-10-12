@@ -23,7 +23,7 @@
 #include "executor/executor.h"
 
 /*
- * Получить название узла плана по его NodeTag
+ * Получает название узла плана по его NodeTag
  */
 static const char *
 nodetag_to_string(NodeTag pathtype)
@@ -62,7 +62,7 @@ nodetag_to_string(NodeTag pathtype)
 }
 
 /*
- * Записывает все пути отношения eerel в таблицу ee.paths
+ * Записывает все пути eerel отношения в таблицу ee.paths
  */
 void
 insert_eerel_into_eepaths(EERel *eerel)
