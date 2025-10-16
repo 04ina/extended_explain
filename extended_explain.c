@@ -123,17 +123,20 @@ ee_explain(Query *query, int cursorOptions,
 		   QueryEnvironment *queryEnv)
 {
 	ListCell   *br;
+	int64		query_id;
 
 	global_ee_state = init_ee_state();
 
 	standard_ExplainOneQuery(query, cursorOptions, into, es,
 							 queryString, params, queryEnv);
 
+	query_id = insert_query_info_into_eequery(queryString);
+
 	foreach(br, global_ee_state->eerel_list)
 	{
 		EERel	   *rel = (EERel *) lfirst(br);
 
-		insert_eerel_into_eepaths(rel);
+		insert_eerel_into_eepaths(rel, query_id);
 	}
 
 	delete_ee_state(global_ee_state);

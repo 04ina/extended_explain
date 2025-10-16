@@ -8,12 +8,21 @@
  */ 
 CREATE SCHEMA ee;
 
+CREATE TABLE ee.query 
+(
+	id SERIAL PRIMARY KEY,
+	execution_ts timestamp,
+	query_text TEXT
+);
+
 /*
  * В таблицу ee.paths записываются все пути, которые были рассмотрены 
  * планировщиком при исполнении запроса в режиме EXPLAIN.
  */ 
 CREATE TABLE ee.paths
 (
+	query_id bigint,
+
 	/* Уровень, на котором находится путь. Нужен для наглядной иерархии путей */
 	level integer, 		
 
@@ -45,5 +54,7 @@ CREATE TABLE ee.paths
 	rel_name text,
 
 	/* Oid индекса, использованного при чтении таблицы */
-	indexoid oid
+	indexoid oid,
+
+	FOREIGN KEY (query_id) REFERENCES  ee.query(id)
 );
