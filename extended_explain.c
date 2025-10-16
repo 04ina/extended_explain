@@ -295,6 +295,8 @@ get_subpath_num(Path *path)
 		case T_LimitPath:
 		case T_MaterialPath:
 		case T_AggPath:
+		case T_GatherPath:
+		case T_SortPath:
 			/* Путь имеет один дочерний путь */
 			subpath_num = 1;
 			break;

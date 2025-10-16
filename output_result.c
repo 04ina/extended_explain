@@ -59,6 +59,10 @@ nodetag_to_string(NodeTag pathtype)
 			return "SubqueryScan";
 		case T_Agg:
 			return "Agg";
+		case T_Sort:
+			return "Sort";
+		case T_Gather:
+			return "Gather";
 		default:
 			return "Unknown";
 	}
