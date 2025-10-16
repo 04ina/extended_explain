@@ -291,6 +291,7 @@ get_subpath_num(Path *path)
 		case T_ProjectionPath:
 		case T_LimitPath:
 		case T_MaterialPath:
+		case T_AggPath:
 			/* Путь имеет один дочерний путь */
 			subpath_num = 1;
 			break;

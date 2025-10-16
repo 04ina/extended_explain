@@ -56,6 +56,8 @@ nodetag_to_string(NodeTag pathtype)
 			return "Limit";
 		case T_SubqueryScan:
 			return "SubqueryScan";
+		case T_Agg:
+			return "Agg";
 		default:
 			return "Unknown";
 	}
