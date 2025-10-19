@@ -27,37 +27,6 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/planner.h"
 
-/*
- * EEState определяет основные переменные расширения extended_explain
- */
-typedef struct EEState
-{
-	MemoryContext ctx;
-
-	/* Список eerel отношений */
-	List	   *eerel_list;
-
-	/* Список eepath путей */
-	List	   *eepath_list;
-
-	/*
-	 * Счетчик путей для однозначной идентификации путей
-	 *
-	 * Не путать с идентификацией для поиска
-	 * eepath по path
-	 */
-	int64		eepath_counter;
-
-	/*
-	 * Определяет минимальный уровень текущего обрабатываемого
-	 * подзапроса.
-	 *
-	 * Для первого обрабатываемого подзапроса равен
-	 * единице. Для последующих подзапросов равен наибольшему уровню предыдущего подзапроса плюс
-	 * один.
-	 */
-	int64		init_level;
-}			EEState;
 
 /*
  * EEPath -- информация об исходном пути
@@ -97,6 +66,9 @@ typedef struct EEPath
 	 * EXPLAIN
 	 */
 	int64		id;
+
+	/* Список eepath путей */
+	List	   *eepath_list;
 
 	/*
 	 * Тип пути, наследуемый от исходного пути
@@ -153,6 +125,8 @@ typedef struct EERel
 	 */
 	RelOptInfo *roi_pointer;
 
+	int64		id;
+
 	/*
 	 * Название отношения. На данный момент существует лишь для базовых отношений
 	 */
@@ -171,6 +145,54 @@ typedef struct EERel
 	 */
 	List	   *eepath_list;
 }			EERel;
+
+/*
+ *
+ */
+typedef struct EESubQuery
+{
+	//PlannerInfo	*pi_pointer;
+
+	int64		id;
+
+	/* Список eerel отношений */
+	List	   *eerel_list;
+
+}			EESubQuery;
+
+/*
+ * EEState определяет основные переменные расширения extended_explain
+ */
+typedef struct EEState
+{
+	MemoryContext ctx;
+
+	List	   *eesubquery_list;
+
+	EESubQuery		*current_eesubquery;
+	
+	/*
+	 * Счетчик путей для однозначной идентификации путей
+	 *
+	 * Не путать с идентификацией для поиска
+	 * eepath по path
+	 */
+	int64		eepath_counter;
+
+	int64		eerel_counter;
+
+	int64		eesubquery_counter;
+
+	/*
+	 * Определяет минимальный уровень текущего обрабатываемого
+	 * подзапроса.
+	 *
+	 * Для первого обрабатываемого подзапроса равен
+	 * единице. Для последующих подзапросов равен наибольшему уровню предыдущего подзапроса плюс
+	 * один.
+	 */
+	int64		init_level;
+}			EEState;
 
 /*
  * Типы PathWithOneSubPath и PathWithTwoSubPaths и макросы GET_SUB_PATH,
@@ -206,20 +228,26 @@ extern void ee_remember_rel_pathlist(PlannerInfo *root,
 									 Index rti,
 									 RangeTblEntry *rte);
 
+extern void ee_process_upper_paths(PlannerInfo *root,
+								   UpperRelationKind stage,
+								   RelOptInfo *input_rel,
+								   RelOptInfo *output_rel,
+								   void *extra);
+
 extern EEState * init_ee_state(void);
 extern void delete_ee_state(EEState * ee_state);
 
-extern void add_eepath_into_eerel(EERel * eerel, EEPath * eepath);
-
-extern EEPath * create_eepath(Path *new_path, EERel * eerel);
+extern EEPath * create_eepath(EERel * eerel, Path *new_path);
 extern int	get_subpath_num(Path *path);
 
-extern EERel * init_eerel(void);
-extern EERel * search_eerel(RelOptInfo *roi);
+extern EEPath * init_eepath(EERel *eerel);
+extern EEPath * search_eepath(EERel *eerel, Path *path);
+extern void fill_eepath(EEPath * eepath, Path *path);
+
+extern EERel * init_eerel(EESubQuery *eesubquery);
+extern EERel * search_eerel(EESubQuery *eesubquery, RelOptInfo *roi);
 extern void fill_eerel(EERel * eerel, RelOptInfo *roi);
 
-extern EEPath * init_eepath(void);
-extern EEPath * search_eepath(Path *path);
-extern void fill_eepath(EEPath * eepath, Path *path);
+extern void init_eesubquery(void);
 
 #endif							/* EXTENDED_EXPLAIN_H */

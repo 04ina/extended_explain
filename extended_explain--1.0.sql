@@ -23,11 +23,14 @@ CREATE TABLE ee.paths
 (
 	query_id bigint,
 
-	/* Уровень, на котором находится путь. Нужен для наглядной иерархии путей */
-	level integer, 		
+	subquery_type text,
+
+	subquery_id bigint,
+
+	rel_id bigint,
 
 	/* Однозначный идентификатор пути в рамках одного запроса */
-	path_name bigint,
+	path_id bigint,
 
 	/* Название пути. Совпадает с названием соответствующего узла плана */
 	path_type text,

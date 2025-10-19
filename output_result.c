@@ -87,105 +87,119 @@ get_next_query_id(void)
 }
 
 /*
- * Записывает все пути eerel отношения в таблицу ee.paths
+ * Записывает все пути в таблицу ee.paths
  */
 void
-insert_eerel_into_eepaths(EERel * eerel, int64 query_id)
+insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 {
 	Relation	rel;
 	TupleDesc	tupdesc;
 	HeapTuple	tuple;
-	Datum		values[11];
-	bool		nulls[11] = {false, false, false, false, false, false, false, false, false, false, false};
-	ListCell   *lc;
+	Datum		values[13];
+	bool		nulls[13] = {false, false, false, false, false, false, false, false, false, false, false, false, false};
 	EState	   *estate;
+
+	ListCell   *eesq_lc;
+	ListCell   *eer_lc;
+	ListCell   *eep_lc;
 
 	estate = CreateExecutorState();
 
 	rel = table_openrv(makeRangeVar("ee", "paths", -1), RowExclusiveLock);
 
-	/* Get the tuple descriptor for the table */
-	tupdesc = RelationGetDescr(rel);
-
-	/* For each path in the pathlist */
-	foreach(lc, eerel->eepath_list)
+	foreach(eesq_lc, ee_state->eesubquery_list)
 	{
-		EEPath	   *eepath = (EEPath *) lfirst(lc);
+		EESubQuery	*eesubquery = (EESubQuery *) lfirst(eesq_lc);
 
-		values[0] = Int64GetDatum(query_id);
+		if (eesubquery->eerel_list == NIL)
+			break;
 
-		values[1] = Int32GetDatum(eepath->level);
-
-		values[2] = Int64GetDatum(eepath->id);
-
-		values[3] = CStringGetTextDatum(nodetag_to_string(eepath->pathtype));
-
-		if (eepath->nsub == 0)
+		foreach(eer_lc, eesubquery->eerel_list)
 		{
-			nulls[4] = true;
-			values[4] = (Datum) 0;
+			EERel	*eerel = (EERel *) lfirst(eer_lc);
 
+			foreach(eep_lc, eerel->eepath_list)
+			{
+				EEPath	*eepath = (EEPath *) lfirst(eep_lc);
+
+				/* Get the tuple descriptor for the table */
+				tupdesc = RelationGetDescr(rel);
+
+				values[0] = Int64GetDatum(query_id);
+				nulls[1] = true;
+				values[2] = Int64GetDatum(eesubquery->id);
+				values[3] = Int64GetDatum(eerel->id);
+				values[4] = Int64GetDatum(eepath->id);
+
+				values[5] = CStringGetTextDatum(nodetag_to_string(eepath->pathtype));
+
+				if (eepath->nsub == 0)
+				{
+					nulls[6] = true;
+					values[6] = (Datum) 0;
+
+				}
+				else if (eepath->nsub == 1)
+				{
+					Datum		sub_ids[1];
+
+					nulls[6] = false;
+					sub_ids[0] = Int64GetDatum(eepath->sub_eepath_1->id);
+					values[6] = PointerGetDatum(construct_array(sub_ids,
+																1,
+																INT8OID,
+																8,
+																true,
+																'd'));
+				}
+				else if (eepath->nsub == 2)
+				{
+					Datum		sub_ids[2];
+
+					nulls[6] = false;
+					sub_ids[0] = Int64GetDatum(eepath->sub_eepath_1->id);
+					sub_ids[1] = Int64GetDatum(eepath->sub_eepath_2->id);
+					values[6] = PointerGetDatum(construct_array(sub_ids,
+																2,
+																INT8OID,
+																8,
+																true,
+																'd'));
+				}
+
+				values[7] = Float8GetDatum(eepath->startup_cost);
+				values[8] = Float8GetDatum(eepath->total_cost);
+				values[9] = Int64GetDatum(eepath->rows);
+				values[10] = BoolGetDatum(eepath->is_del);
+
+				if (eerel->eref == NULL)
+				{
+					nulls[11] = true;
+					values[11] = (Datum) 0;
+				}
+				else
+				{
+					nulls[11] = false;
+					values[11] = CStringGetTextDatum(eerel->eref->aliasname);
+				}
+
+				if (eepath->indexoid == 0)
+				{
+					nulls[12] = true;
+					values[12] = (Datum) 0;
+				}
+				else
+				{
+					nulls[12] = false;
+					values[12] = ObjectIdGetDatum(eepath->indexoid);
+				}
+
+				/* Создание и вставка тапла */
+				tuple = heap_form_tuple(tupdesc, values, nulls);
+				simple_heap_insert(rel, tuple);
+				heap_freetuple(tuple);
+			}
 		}
-		else if (eepath->nsub == 1)
-		{
-			Datum		sub_ids[1];
-
-			nulls[4] = false;
-			sub_ids[0] = Int64GetDatum(eepath->sub_eepath_1->id);
-			values[4] = PointerGetDatum(construct_array(sub_ids,
-														1,
-														INT8OID,
-														8,
-														true,
-														'd'));
-		}
-		else if (eepath->nsub == 2)
-		{
-			Datum		sub_ids[2];
-
-			nulls[4] = false;
-			sub_ids[0] = Int64GetDatum(eepath->sub_eepath_1->id);
-			sub_ids[1] = Int64GetDatum(eepath->sub_eepath_2->id);
-			values[4] = PointerGetDatum(construct_array(sub_ids,
-														2,
-														INT8OID,
-														8,
-														true,
-														'd'));
-		}
-
-		values[5] = Float8GetDatum(eepath->startup_cost);
-		values[6] = Float8GetDatum(eepath->total_cost);
-		values[7] = Int64GetDatum(eepath->rows);
-		values[8] = BoolGetDatum(eepath->is_del);
-
-		if (eerel->eref == NULL)
-		{
-			nulls[9] = true;
-			values[9] = (Datum) 0;
-		}
-		else
-		{
-			nulls[9] = false;
-			values[9] = CStringGetTextDatum(eerel->eref->aliasname);
-		}
-
-		if (eepath->indexoid == 0)
-		{
-			nulls[10] = true;
-			values[10] = (Datum) 0;
-		}
-		else
-		{
-			nulls[10] = false;
-			values[10] = ObjectIdGetDatum(eepath->indexoid);
-		}
-
-		/* Создание и вставка тапла */
-		tuple = heap_form_tuple(tupdesc, values, nulls);
-		simple_heap_insert(rel, tuple);
-		heap_freetuple(tuple);
-
 	}
 
 	FreeExecutorState(estate);

@@ -13,8 +13,8 @@
 
 #include "extended_explain.h"
 
-void		insert_eerel_into_eepaths(EERel * eerel, int64 query_id);
+extern void insert_paths_into_eepaths(int64 query_id, EEState *ee_state);
 
-int64       insert_query_info_into_eequery(const char *queryString);
+extern int64 insert_query_info_into_eequery(const char *queryString);
 
 #endif							/* EE_OUTPUT_RESULT_H */
