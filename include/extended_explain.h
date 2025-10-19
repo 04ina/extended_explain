@@ -219,7 +219,7 @@ extern void ee_add_path_hook(RelOptInfo *parent_rel,
 							 Path *new_path);
 
 extern void ee_explain(Query *query, int cursorOptions,
-					   IntoClause *into, ExplainState *es,
+					   IntoClause *into, struct ExplainState *es,
 					   const char *queryString, ParamListInfo params,
 					   QueryEnvironment *queryEnv);
 

@@ -6,20 +6,7 @@
  *
  * # TODO:
  *
- * 1. В вывод добавить идентификаторы отношений и подзапросов. Это будет
- *    полезно при объединении путей и планов не по уровням, а по
- *    принадлежности к тем или иным отношениями и подзапросам. В таком
- *    случае механизм уровней можно упразднить.
- *
- * 2. Создать структуру для запросов/подзапросов. Благодаря этому можно
- *    будет упразднить глобальные списки путей и отношений в EEState.
- *    Поиск путей и отношений посредством функций search_eepath() и
- *    search_eerel() соответственно можно будет производит в локальных
- *    списках в структуре запросов/подзапросов. Также функцию
- *    insert_eerel_into_eepaths() необходимо переработать -- она должна
- *    вызываться не для конкретного отношения, а для запроса/подзапроса.
- *
- * 3. Необходим более надежный однозначный идентификатор для eepath.
+ * 1. Необходим более надежный однозначный идентификатор для eepath.
  *    На данный момент при поиске eepath по соответствующему пути происходит
  *    по условию "eepath->path_pointer == path && eepath->rows == path->rows"
  *    (функция search_eepath), которое не гарантирует однозначную идентификацию.
@@ -30,7 +17,18 @@
 #include "include/extended_explain.h"
 #include "include/output_result.h"
 
+#include "commands/explain_state.h"
+#include "commands/defrem.h"
+
 PG_MODULE_MAGIC;
+
+typedef struct 
+{
+	bool		get_paths;
+} extended_explain_options;
+
+static void ee_get_paths_handler(ExplainState *es, DefElem *opt,
+								 ParseState *pstate);
 
 /*
  * Хуки для перехвата путей
@@ -39,6 +37,12 @@ static ExplainOneQuery_hook_type prev_ExplainOneQuery_hook = NULL;
 static add_path_hook_type prev_add_path_hook = NULL;
 static set_rel_pathlist_hook_type prev_set_rel_pathlist_hook = NULL;
 static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
+
+/*
+ * Идентификатор расширения, необходим для реализации EXPLAIN параметра
+ * get_paths.  Без указания данного параметра расширение работать не будет.
+ */
+static int	ee_extension_id;
 
 /*
  * global_ee_state сохраняет переменные расширения,
@@ -51,6 +55,12 @@ EEState    *global_ee_state = NULL;
 void
 _PG_init(void)
 {
+	/*
+	 * Получаем Id расширения и регистрируем get_paths параметр для EXPLAIN.
+	 */
+	ee_extension_id = GetExplainExtensionId("extended_explain");
+	RegisterExtensionExplainOption("get_paths", ee_get_paths_handler);
+
 	prev_ExplainOneQuery_hook = ExplainOneQuery_hook;
 	ExplainOneQuery_hook = ee_explain;
 
@@ -117,31 +127,66 @@ delete_ee_state(EEState * ee_state)
 }
 
 /* ----------------------------------------------------------------
+ *				Реализация EXPLAIN параметров 
+ * ----------------------------------------------------------------
+ */
+
+/*
+ * Функция-обработчик параметра get_paths для EXPLAIN
+ */
+static void 
+ee_get_paths_handler(ExplainState *es, DefElem *opt,
+								 ParseState *pstate)
+{
+	extended_explain_options *options = GetExplainExtensionState(es, ee_extension_id);
+
+	if (options == NULL)
+	{
+		options = palloc0(sizeof(extended_explain_options));
+		SetExplainExtensionState(es, ee_extension_id, options);
+	}
+
+	options->get_paths = defGetBoolean(opt);
+}
+
+/* ----------------------------------------------------------------
  *				Функции-обработчики хуков
  * ----------------------------------------------------------------
  */
 
 void
 ee_explain(Query *query, int cursorOptions,
-		   IntoClause *into, ExplainState *es,
+		   IntoClause *into, struct ExplainState *es,
 		   const char *queryString, ParamListInfo params,
 		   QueryEnvironment *queryEnv)
 {
-	int64		query_id;
+	extended_explain_options *options;
 
-	global_ee_state = init_ee_state();
+	options = GetExplainExtensionState(es, ee_extension_id);
 
-	init_eesubquery();
+	if (options == NULL || !options->get_paths)
+	{
+		standard_ExplainOneQuery(query, cursorOptions, into, es,
+								queryString, params, queryEnv);
+	}
+	else
+	{
+		int64		query_id;
 
-	standard_ExplainOneQuery(query, cursorOptions, into, es,
-							 queryString, params, queryEnv);
+		global_ee_state = init_ee_state();
 
-	query_id = insert_query_info_into_eequery(queryString);
+		init_eesubquery();
 
-	insert_paths_into_eepaths(query_id, global_ee_state);
+		standard_ExplainOneQuery(query, cursorOptions, into, es,
+								queryString, params, queryEnv);
 
-	delete_ee_state(global_ee_state);
-	global_ee_state = NULL;
+		query_id = insert_query_info_into_eequery(queryString);
+
+		insert_paths_into_eepaths(query_id, global_ee_state);
+
+		delete_ee_state(global_ee_state);
+		global_ee_state = NULL;
+	}
 }
 
 /*
