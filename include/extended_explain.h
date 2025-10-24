@@ -245,7 +245,7 @@ extern EEPath * search_eepath(EERel *eerel, Path *path);
 extern void fill_eepath(EEPath * eepath, Path *path);
 
 extern EERel * init_eerel(EESubQuery *eesubquery);
-extern EERel * search_eerel(EESubQuery *eesubquery, RelOptInfo *roi);
+extern EERel * search_eerel(RelOptInfo *roi);
 extern void fill_eerel(EERel * eerel, RelOptInfo *roi);
 
 extern void init_eesubquery(void);

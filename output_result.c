@@ -63,6 +63,18 @@ nodetag_to_string(NodeTag pathtype)
 			return "Sort";
 		case T_Gather:
 			return "Gather";
+		case T_GatherMerge:
+			return "GatherMerge";
+		case T_Append:
+			return "Append";
+		case T_Unique:
+			return "Unique";
+		case T_CteScan:
+			return "CteScan";
+		case T_WindowAgg:
+			return "WindowAgg";
+		case T_IncrementalSort:
+			return "IncrementalSort";
 		default:
 			return "Unknown";
 	}

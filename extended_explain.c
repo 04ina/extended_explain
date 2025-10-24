@@ -206,7 +206,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 
 	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
 
-	eerel = search_eerel(global_ee_state->current_eesubquery, parent_rel);
+	eerel = search_eerel(parent_rel);
 	if (eerel == NULL)
 	{
 		eerel = init_eerel(global_ee_state->current_eesubquery);
@@ -241,7 +241,7 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 
 	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
 
-	eerel = search_eerel(global_ee_state->current_eesubquery, rel);
+	eerel = search_eerel(rel);
 
 	eerel->eref = makeNode(Alias);
 	eerel->eref->aliasname = pstrdup(rte->eref->aliasname);
@@ -307,6 +307,9 @@ search_eepath(EERel *eerel, Path *path)
 {
 	ListCell   *cl;
 
+	if (eerel == NULL)
+		return NULL;
+
 	foreach(cl, eerel->eepath_list)
 	{
 		EEPath	   *eepath = (EEPath *) lfirst(cl);
@@ -354,6 +357,7 @@ get_subpath_num(Path *path)
 		case T_IndexPath:
 		case T_Path:
 		case T_BitmapHeapPath:
+		case T_AppendPath: /* ????? */
 			/* Путь не имеет дочерних путей */
 			subpath_num = 0;
 			break;
@@ -364,6 +368,10 @@ get_subpath_num(Path *path)
 		case T_AggPath:
 		case T_GatherPath:
 		case T_SortPath:
+		case T_GatherMergePath:
+		case T_UpperUniquePath:
+		case T_WindowAggPath:
+		case T_IncrementalSortPath:
 			/* Путь имеет один дочерний путь */
 			subpath_num = 1;
 			break;
@@ -400,7 +408,7 @@ create_eepath(EERel * eerel, Path *new_path)
 	 * ранее.
 	 */
 	if (eerel == NULL)
-		eerel = search_eerel(global_ee_state->current_eesubquery, new_path->parent);
+		eerel = search_eerel(new_path->parent);
 
 	/*
 	 * Инициализируем и заполняем eepath характеристиками пути
@@ -421,18 +429,17 @@ create_eepath(EERel * eerel, Path *new_path)
 	{
 		EERel *sub_eerel;
 
-		sub_eerel = search_eerel(global_ee_state->current_eesubquery, 
-								 GET_SUB_PATH(new_path)->parent);
+		sub_eerel = search_eerel(GET_SUB_PATH(new_path)->parent);
 
 		/* Связываем eepath с дочерним путем */
 		eepath->sub_eepath_1 = search_eepath(sub_eerel, GET_SUB_PATH(new_path));
 
 		/*
-			* Если мы не находим дочерний узел в
-			* списке, значит он не был обработан функцией
-			* add_path, а значит и хуком ee_remember_path.  В таком случае создаем дочерний путь
-			* отдельно.
-			*/
+		 * Если мы не находим дочерний узел в
+		 * списке, значит он не был обработан функцией
+		 * add_path, а значит и хуком ee_remember_path.  В таком случае создаем дочерний путь
+		 * отдельно.
+		 */
 		if (eepath->sub_eepath_1 == NULL)
 			eepath->sub_eepath_1 = create_eepath(sub_eerel, GET_SUB_PATH(new_path));
 
@@ -444,11 +451,9 @@ create_eepath(EERel * eerel, Path *new_path)
 		EERel *outer_eerel;
 		EERel *inner_eerel;
 
-		outer_eerel = search_eerel(global_ee_state->current_eesubquery, 
-								   GET_OUTER_PATH(new_path)->parent);
+		outer_eerel = search_eerel(GET_OUTER_PATH(new_path)->parent);
 
-		inner_eerel = search_eerel(global_ee_state->current_eesubquery, 
-								   GET_INNER_PATH(new_path)->parent);
+		inner_eerel = search_eerel(GET_INNER_PATH(new_path)->parent);
 
 		/* Связываем eepath с дочернии путями */
 		eepath->sub_eepath_1 = search_eepath(outer_eerel, GET_OUTER_PATH(new_path));
@@ -492,19 +497,26 @@ init_eerel(EESubQuery *eesubquery)
  * Реализовать более быстрый алгоритм поиска
  */
 EERel *
-search_eerel(EESubQuery *eesubquery, RelOptInfo *roi)
+search_eerel(RelOptInfo *roi)
 {
-	ListCell   *cell;
+	ListCell   *eesq_lc;
+	ListCell   *eer_lc;
 
-	foreach(cell, eesubquery->eerel_list)
+	foreach(eesq_lc, global_ee_state->eesubquery_list)
 	{
-		EERel	   *eerel = (EERel *) lfirst(cell);
-
-		if (eerel->roi_pointer == roi)
+		EESubQuery	*eesubquery = (EESubQuery *) lfirst(eesq_lc);
+		
+		foreach(eer_lc, eesubquery->eerel_list)
 		{
-			return eerel;
+			EERel	   *eerel = (EERel *) lfirst(eer_lc);
+
+			if (eerel->roi_pointer == roi)
+			{
+				return eerel;
+			}
 		}
 	}
+
 	return NULL;
 }
 
