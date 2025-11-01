@@ -23,15 +23,15 @@ install_data('extended_explain.control',
              install_dir: sharedir / 'extension',
             )
 
-# pg_regress = find_program('pg_regress',
-#                           dirs: [pkglibdir / 'pgxs/src/test/regress']
-#                          )
+pg_regress = find_program('pg_regress',
+                          dirs: [pkglibdir / 'pgxs/src/test/regress']
+                         )
 
-# regress_tests = ['']
+regress_tests = ['eepaths', 'eequery']
 
-# test('regress',
-#      pg_regress,
-#      args: ['--bindir', bindir,
-#             '--inputdir', meson.current_source_dir() / 'test',
-#            ] + regress_tests,
-#     )
+test('regress',
+     pg_regress,
+     args: ['--bindir', bindir,
+            '--inputdir', meson.current_source_dir() / 'test',
+           ] + regress_tests,
+    )

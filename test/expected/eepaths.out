@@ -1,0 +1,165 @@
+--
+-- Подготовка
+--
+CREATE EXTENSION extended_explain;
+CREATE TABLE test_table(col integer); 
+INSERT INTO test_table SELECT generate_series(1,1000);
+ANALYZE test_table;
+--
+-- Проверка параметра get_paths  
+--
+EXPLAIN
+SELECT * FROM test_table;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+(1 row)
+
+SELECT 
+	query_id, 
+	subquery_type, 
+	subquery_id, 
+	rel_id, 
+	path_id, 
+	path_type, 
+	child_paths, 
+	startup_cost,
+	total_cost,
+	rows,
+	rel_name 
+FROM 
+	ee.paths;
+ query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | rel_name 
+----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+----------
+(0 rows)
+
+EXPLAIN (get_paths)
+SELECT * FROM test_table;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+(1 row)
+
+SELECT 
+	query_id, 
+	subquery_type, 
+	subquery_id, 
+	rel_id, 
+	path_id, 
+	path_type, 
+	child_paths, 
+	startup_cost,
+	total_cost,
+	rows,
+	rel_name 
+FROM 
+	ee.paths;
+ query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows |  rel_name  
+----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+------------
+        1 |               |           1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 | test_table
+        1 |               |           1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 | 
+(2 rows)
+
+TRUNCATE TABLE ee.paths, ee.query;
+--
+-- Проверка простейших случаев
+--
+-- SeqScan
+EXPLAIN (get_paths)
+SELECT * FROM test_table;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+(1 row)
+
+SELECT 
+	query_id, 
+	subquery_type, 
+	subquery_id, 
+	rel_id, 
+	path_id, 
+	path_type, 
+	child_paths, 
+	startup_cost,
+	total_cost,
+	rows,
+	rel_name 
+FROM 
+	ee.paths;
+ query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows |  rel_name  
+----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+------------
+        2 |               |           1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 | test_table
+        2 |               |           1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 | 
+(2 rows)
+
+TRUNCATE TABLE ee.paths, ee.query;
+-- IndexOnlyScan
+CREATE INDEX ON test_table(col);
+EXPLAIN (get_paths)
+SELECT * FROM test_table;
+                          QUERY PLAN                          
+--------------------------------------------------------------
+ Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+(1 row)
+
+SELECT 
+	query_id, 
+	subquery_type, 
+	subquery_id, 
+	rel_id, 
+	path_id, 
+	path_type, 
+	child_paths, 
+	startup_cost,
+	total_cost,
+	rows,
+	rel_name 
+FROM 
+	ee.paths;
+ query_id | subquery_type | subquery_id | rel_id | path_id |   path_type    | child_paths | startup_cost | total_cost | rows |  rel_name  
+----------+---------------+-------------+--------+---------+----------------+-------------+--------------+------------+------+------------
+        3 |               |           1 |      1 |       1 | SeqScan        |             |            0 |         15 | 1000 | test_table
+        3 |               |           1 |      1 |       2 | IndexOnlyScan  |             |        0.275 |     43.275 | 1000 | test_table
+        3 |               |           1 |      1 |       3 | BitmapHeapScan |             |       25.525 |     40.525 | 1000 | test_table
+        3 |               |           1 |      2 |       4 | SeqScan        |             |            0 |         15 | 1000 | 
+(4 rows)
+
+TRUNCATE TABLE ee.paths, ee.query;
+DROP INDEX test_table_col_idx;
+-- CteScan, проверка связи между запросом и подзапросом 
+EXPLAIN (get_paths)
+WITH cte AS MATERIALIZED
+(
+	SELECT * FROM test_table
+)
+SELECT * FROM cte;
+                              QUERY PLAN                              
+----------------------------------------------------------------------
+ CTE Scan on cte  (cost=15.00..35.00 rows=1000 width=4)
+   CTE cte
+     ->  Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+(3 rows)
+
+SELECT 
+	query_id, 
+	subquery_type, 
+	subquery_id, 
+	rel_id, 
+	path_id, 
+	path_type, 
+	child_paths, 
+	startup_cost,
+	total_cost,
+	rows,
+	rel_name 
+FROM 
+	ee.paths;
+ query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows |  rel_name  
+----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+------------
+        4 |               |           1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 | test_table
+        4 |               |           1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 | 
+        4 |               |           2 |      3 |       3 | CteScan   |             |            0 |         20 | 1000 | cte
+        4 |               |           2 |      4 |       4 | CteScan   |             |            0 |         20 | 1000 | 
+(4 rows)
+
+TRUNCATE TABLE ee.paths, ee.query;
