@@ -154,6 +154,9 @@ ee_get_paths_handler(ExplainState *es, DefElem *opt,
  * ----------------------------------------------------------------
  */
 
+/*
+ * Функция-обработчик хука ExplainOneQuery_hook
+ */
 void
 ee_explain(Query *query, int cursorOptions,
 		   IntoClause *into, struct ExplainState *es,
@@ -531,6 +534,8 @@ void
 fill_eerel(EERel * eerel, RelOptInfo *roi)
 {
 	eerel->roi_pointer = roi;
+
+	eerel->joined_rel_num = bms_num_members(roi->relids);
 }
 
 /* ----------------------------------------------------------------

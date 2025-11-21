@@ -81,7 +81,7 @@ nodetag_to_string(NodeTag pathtype)
 }
 
 /*
- * 
+ * Получение следующего query_id согласно последовательности query_id_seq
  */
 static int64
 get_next_query_id(void)
@@ -99,7 +99,7 @@ get_next_query_id(void)
 }
 
 /*
- * Записывает все пути в таблицу ee.paths
+ * Записывает все пути из ee_state в таблицу ee.paths
  */
 void
 insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
@@ -107,8 +107,8 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 	Relation	rel;
 	TupleDesc	tupdesc;
 	HeapTuple	tuple;
-	Datum		values[13];
-	bool		nulls[13] = {false, false, false, false, false, false, false, false, false, false, false, false, false};
+	Datum		values[14];
+	bool		nulls[14] = {false, false, false, false, false, false, false, false, false, false, false, false, false, false};
 	EState	   *estate;
 
 	ListCell   *eesq_lc;
@@ -206,6 +206,8 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 					values[12] = ObjectIdGetDatum(eepath->indexoid);
 				}
 
+				values[13] = eerel->joined_rel_num;
+
 				/* Создание и вставка тапла */
 				tuple = heap_form_tuple(tupdesc, values, nulls);
 				simple_heap_insert(rel, tuple);
@@ -219,7 +221,7 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 }
 
 /*
- *
+ * Записывает информацию о запросе в таблицу ee.query
  */
 int64
 insert_query_info_into_eequery(const char *queryString)
