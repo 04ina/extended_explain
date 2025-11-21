@@ -1,11 +1,13 @@
 --
 -- Проверка записи в таблицы ee.query и параметра get_paths
 --
+CREATE TABLE test_table(col integer); 
+INSERT INTO test_table SELECT generate_series(1,1000);
 EXPLAIN
 SELECT * FROM test_table;
                           QUERY PLAN                          
 --------------------------------------------------------------
- Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+ Seq Scan on test_table  (cost=0.00..35.50 rows=2550 width=4)
 (1 row)
 
 SELECT id, query_text FROM ee.query;
@@ -17,13 +19,14 @@ EXPLAIN (get_paths)
 SELECT * FROM test_table;
                           QUERY PLAN                          
 --------------------------------------------------------------
- Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
+ Seq Scan on test_table  (cost=0.00..35.50 rows=2550 width=4)
 (1 row)
 
 SELECT id, query_text FROM ee.query;
  id |        query_text         
 ----+---------------------------
-  5 | EXPLAIN (get_paths)      +
+ 15 | EXPLAIN (get_paths)      +
     | SELECT * FROM test_table;
 (1 row)
 
+DROP TABLE test_table;
