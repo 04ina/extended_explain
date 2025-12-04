@@ -8,8 +8,11 @@
  *
  * 1. Необходим более надежный однозначный идентификатор для eepath.
  *    На данный момент при поиске eepath по соответствующему пути происходит
- *    по условию "eepath->path_pointer == path && eepath->rows == path->rows"
- *    (функция search_eepath), которое не гарантирует однозначную идентификацию.
+ *    по условию, которое не гарантирует однозначную идентификацию: (функция search_eepath)
+ *		"eepath->path_pointer == path && 
+ *		 eepath->rows == path->rows && 
+ *		 eepath->startup_cost == path->startup_cost && 
+ *		 eepath->total_cost == path->total_cost"
  *
  *-------------------------------------------------------------------------
  */
@@ -317,7 +320,10 @@ search_eepath(EERel *eerel, Path *path)
 	{
 		EEPath	   *eepath = (EEPath *) lfirst(cl);
 
-		if (eepath->path_pointer == path && eepath->rows == path->rows)
+		if (eepath->path_pointer == path && 
+			eepath->rows == path->rows && 
+			eepath->startup_cost == path->startup_cost && 
+			eepath->total_cost == path->total_cost)
 		{
 			return eepath;
 		}
