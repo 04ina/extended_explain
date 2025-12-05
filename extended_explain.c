@@ -20,11 +20,17 @@
 #include "include/extended_explain.h"
 #include "include/output_result.h"
 
-#include "commands/explain_state.h"
 #include "commands/defrem.h"
+
+#if (PG_VERSION_NUM >= 180000)
+#include "commands/explain_state.h"
+#else
+#include "utils/guc.h"
+#endif
 
 PG_MODULE_MAGIC;
 
+#if (PG_VERSION_NUM >= 180000)
 typedef struct 
 {
 	bool		get_paths;
@@ -34,18 +40,22 @@ static void ee_get_paths_handler(ExplainState *es, DefElem *opt,
 								 ParseState *pstate);
 
 /*
+ * Идентификатор расширения, необходим для реализации EXPLAIN параметра
+ * get_paths.  Без указания данного параметра расширение работать не будет.
+ */
+static int	ee_extension_id;
+
+#else
+static bool get_paths;
+#endif
+
+/*
  * Хуки для перехвата путей
  */
 static ExplainOneQuery_hook_type prev_ExplainOneQuery_hook = NULL;
 static add_path_hook_type prev_add_path_hook = NULL;
 static set_rel_pathlist_hook_type prev_set_rel_pathlist_hook = NULL;
 static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
-
-/*
- * Идентификатор расширения, необходим для реализации EXPLAIN параметра
- * get_paths.  Без указания данного параметра расширение работать не будет.
- */
-static int	ee_extension_id;
 
 /*
  * global_ee_state сохраняет переменные расширения,
@@ -58,11 +68,40 @@ EEState    *global_ee_state = NULL;
 void
 _PG_init(void)
 {
+
+	/*
+	 * Расширение использует механизм EXPLAIN опций для включения/выключения
+	 * режима сбора всех путей, однако появился данный механизм с 18 версии PostgreSQL.
+	 * На более старых версиях режим сбора всех путей можно включить посредством 
+	 * GUC переменной.
+	 * 
+	 */
+	#if (PG_VERSION_NUM >= 180000)
+
 	/*
 	 * Получаем Id расширения и регистрируем get_paths параметр для EXPLAIN.
 	 */
 	ee_extension_id = GetExplainExtensionId("extended_explain");
 	RegisterExtensionExplainOption("get_paths", ee_get_paths_handler);
+
+	#else 
+
+	/*
+	 * Определяем GUC переменную get_paths
+	 */
+    DefineCustomBoolVariable(
+        "ee.get_paths",
+        "Enable or disable path collection.",
+        NULL,
+        &get_paths,
+        false,
+        PGC_USERSET,
+        GUC_NOT_IN_SAMPLE,
+        NULL,
+		NULL,
+		NULL);    
+
+	#endif
 
 	prev_ExplainOneQuery_hook = ExplainOneQuery_hook;
 	ExplainOneQuery_hook = ee_explain;
@@ -75,6 +114,43 @@ _PG_init(void)
 
 	prev_create_upper_paths_hook = create_upper_paths_hook;
 	create_upper_paths_hook = ee_process_upper_paths;
+}
+
+#if (PG_VERSION_NUM >= 180000)
+/*
+ * Функция-обработчик параметра get_paths для EXPLAIN
+ */
+static void 
+ee_get_paths_handler(ExplainState *es, DefElem *opt,
+								 ParseState *pstate)
+{
+	extended_explain_options *options = GetExplainExtensionState(es, ee_extension_id);
+
+	if (options == NULL)
+	{
+		options = palloc0(sizeof(extended_explain_options));
+		SetExplainExtensionState(es, ee_extension_id, options);
+	}
+
+	options->get_paths = defGetBoolean(opt);
+}
+#endif
+
+/*
+ * Функция получения значения параметра get_paths.
+ */
+static bool
+get_add_paths_setting(struct ExplainState *es)
+{
+#if (PG_VERSION_NUM >= 180000)
+	extended_explain_options *options;
+
+	options = GetExplainExtensionState(es, ee_extension_id);
+
+	return !(options == NULL || !options->get_paths);
+#else
+	return get_paths;
+#endif
 }
 
 /* ----------------------------------------------------------------
@@ -129,28 +205,6 @@ delete_ee_state(EEState * ee_state)
 	pfree(ee_state);
 }
 
-/* ----------------------------------------------------------------
- *				Реализация EXPLAIN параметров 
- * ----------------------------------------------------------------
- */
-
-/*
- * Функция-обработчик параметра get_paths для EXPLAIN
- */
-static void 
-ee_get_paths_handler(ExplainState *es, DefElem *opt,
-								 ParseState *pstate)
-{
-	extended_explain_options *options = GetExplainExtensionState(es, ee_extension_id);
-
-	if (options == NULL)
-	{
-		options = palloc0(sizeof(extended_explain_options));
-		SetExplainExtensionState(es, ee_extension_id, options);
-	}
-
-	options->get_paths = defGetBoolean(opt);
-}
 
 /* ----------------------------------------------------------------
  *				Функции-обработчики хуков
@@ -166,16 +220,8 @@ ee_explain(Query *query, int cursorOptions,
 		   const char *queryString, ParamListInfo params,
 		   QueryEnvironment *queryEnv)
 {
-	extended_explain_options *options;
 
-	options = GetExplainExtensionState(es, ee_extension_id);
-
-	if (options == NULL || !options->get_paths)
-	{
-		standard_ExplainOneQuery(query, cursorOptions, into, es,
-								queryString, params, queryEnv);
-	}
-	else
+	if (get_add_paths_setting(es))
 	{
 		int64		query_id;
 
@@ -192,6 +238,11 @@ ee_explain(Query *query, int cursorOptions,
 
 		delete_ee_state(global_ee_state);
 		global_ee_state = NULL;
+	}
+	else
+	{
+		standard_ExplainOneQuery(query, cursorOptions, into, es,
+								queryString, params, queryEnv);
 	}
 }
 
