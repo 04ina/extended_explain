@@ -192,6 +192,9 @@ typedef struct EEState
 	 * один.
 	 */
 	int64		init_level;
+
+	RelOptInfo	*cached_current_rel;
+	EERel		*cached_current_eerel;
 }			EEState;
 
 /*
@@ -245,7 +248,7 @@ extern EEPath * search_eepath(EERel *eerel, Path *path);
 extern void fill_eepath(EEPath * eepath, Path *path);
 
 extern EERel * init_eerel(EESubQuery *eesubquery);
-extern EERel * search_eerel(RelOptInfo *roi);
+extern EERel * search_eerel(RelOptInfo *roi, bool search_in_other_eesubqueries);
 extern void fill_eerel(EERel * eerel, RelOptInfo *roi);
 
 extern void init_eesubquery(void);

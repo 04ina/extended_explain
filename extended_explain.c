@@ -263,11 +263,21 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 
 	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
 
-	eerel = search_eerel(parent_rel);
-	if (eerel == NULL)
+	if (global_ee_state->cached_current_rel == parent_rel)
 	{
-		eerel = init_eerel(global_ee_state->current_eesubquery);
-		fill_eerel(eerel, parent_rel);
+		eerel = global_ee_state->cached_current_eerel;
+	}
+	else
+	{
+		eerel = search_eerel(parent_rel, false);
+		if (eerel == NULL)
+		{
+			eerel = init_eerel(global_ee_state->current_eesubquery);
+			fill_eerel(eerel, parent_rel);
+		}
+
+		global_ee_state->cached_current_rel = parent_rel;
+		global_ee_state->cached_current_eerel = eerel;
 	}
 
 	create_eepath(eerel, new_path);
@@ -298,7 +308,7 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 
 	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
 
-	eerel = search_eerel(rel);
+	eerel = search_eerel(rel, false);
 
 	eerel->eref = makeNode(Alias);
 	eerel->eref->aliasname = pstrdup(rte->eref->aliasname);
@@ -468,7 +478,7 @@ create_eepath(EERel * eerel, Path *new_path)
 	 * ранее.
 	 */
 	if (eerel == NULL)
-		eerel = search_eerel(new_path->parent);
+		eerel = search_eerel(new_path->parent, false);
 
 	/*
 	 * Инициализируем и заполняем eepath характеристиками пути
@@ -489,7 +499,8 @@ create_eepath(EERel * eerel, Path *new_path)
 	{
 		EERel *sub_eerel;
 
-		sub_eerel = search_eerel(GET_SUB_PATH(new_path)->parent);
+		sub_eerel = search_eerel(GET_SUB_PATH(new_path)->parent, 
+								 nodeTag(new_path) == T_SubqueryScanPath);
 
 		/* Связываем eepath с дочерним путем */
 		eepath->sub_eepath_1 = search_eepath(sub_eerel, GET_SUB_PATH(new_path));
@@ -511,9 +522,9 @@ create_eepath(EERel * eerel, Path *new_path)
 		EERel *outer_eerel;
 		EERel *inner_eerel;
 
-		outer_eerel = search_eerel(GET_OUTER_PATH(new_path)->parent);
+		outer_eerel = search_eerel(GET_OUTER_PATH(new_path)->parent, false);
 
-		inner_eerel = search_eerel(GET_INNER_PATH(new_path)->parent);
+		inner_eerel = search_eerel(GET_INNER_PATH(new_path)->parent, false);
 
 		/* Связываем eepath с дочернии путями */
 		eepath->sub_eepath_1 = search_eepath(outer_eerel, GET_OUTER_PATH(new_path));
@@ -553,20 +564,43 @@ init_eerel(EESubQuery *eesubquery)
  *
  * Если функция не нашла отношение, то она вернет NULL.
  *
+ * Поддерживает поиск как по текущему, так и по всем подзапросам
+ * 
  * TODO:
  * Реализовать более быстрый алгоритм поиска
  */
 EERel *
-search_eerel(RelOptInfo *roi)
+search_eerel(RelOptInfo *roi, bool search_in_other_eesubqueries)
 {
 	ListCell   *eesq_lc;
 	ListCell   *eer_lc;
 
-	foreach(eesq_lc, global_ee_state->eesubquery_list)
+	if (search_in_other_eesubqueries)
 	{
-		EESubQuery	*eesubquery = (EESubQuery *) lfirst(eesq_lc);
-		
-		foreach(eer_lc, eesubquery->eerel_list)
+		/*
+		 * Ищет eerel среди всех отношений
+		 */
+		foreach(eesq_lc, global_ee_state->eesubquery_list)
+		{
+			EESubQuery	*eesubquery = (EESubQuery *) lfirst(eesq_lc);
+			
+			foreach(eer_lc, eesubquery->eerel_list)
+			{
+				EERel	   *eerel = (EERel *) lfirst(eer_lc);
+
+				if (eerel->roi_pointer == roi)
+				{
+					return eerel;
+				}
+			}
+		}
+	}
+	else
+	{
+		/*
+		 * Ищет eerel в текущем отношении 
+		 */
+		foreach(eer_lc, global_ee_state->current_eesubquery->eerel_list)
 		{
 			EERel	   *eerel = (EERel *) lfirst(eer_lc);
 
