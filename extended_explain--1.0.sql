@@ -88,5 +88,29 @@ CREATE TABLE ee.paths
 	 */
 	joined_rel_num int,
 
+	/*
+	 * Результат работы функции add_path. 
+	 *
+	 * Может принимать три значения: 
+	 *	saved (путь сохранен в pathlist и не был вытеснен), 
+	 *	displaced (путь вытеснен другим путем),
+	 *  removed (путь оказался хуже других путей из pathlist).
+	 */
+	add_path_result text,
+
+	/*
+	 * id пути, который вытеснил текущий путь 
+	 */
+	displaced_by bigint,
+
+	/* 
+	 * Результаты сравнения характеристик вытесняемого и вытесняющего путей
+	 */
+	cost_cmp text,
+	pathkeys_cmp text,
+	bms_cmp text,
+	rows_cmp text,
+	parallel_safe_cmp text,
+
 	FOREIGN KEY (query_id) REFERENCES  ee.query(id)
 );

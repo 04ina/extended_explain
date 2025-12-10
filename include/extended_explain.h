@@ -27,6 +27,34 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/planner.h"
 
+typedef enum
+{
+	APR_SAVED,
+	APR_DISPLACED, 
+	APR_REMOVED,
+} AddPathResult;
+
+typedef enum
+{
+	ROWS_EQUAL,
+	ROWS_BETTER1,
+	ROWS_BETTER2,
+} PathRowsComparison;
+
+typedef enum
+{
+	PARALLEL_SAFE_EQUAL,
+	PARALLEL_SAFE_BETTER1,
+	PARALLEL_SAFE_BETTER2,
+} PathParallelSafeComparison;
+
+typedef enum
+{
+	COSTS_EQUAL,
+	COSTS_BETTER1,
+	COSTS_BETTER2,
+	COSTS_DIFFERENT,
+} PathCostComparison;
 
 /*
  * EEPath -- информация об исходном пути
@@ -90,6 +118,20 @@ typedef struct EEPath
 
 	/* Был ли путь отфильтрован функцией add_path */
 	bool		is_del;
+
+	/*
+	 * Результат работы add_path
+	 */
+	AddPathResult			add_path_result;	// Результат фильтрации на уровне функции add_path (SAVED, DISPLACED, REMOVED)
+	int64 					displaced_by;		// id пути, который вытеснил данный путь
+
+	/* Результаты сравнения при вытеснении */
+	PathCostComparison		cost_cmp;			
+	PathKeysComparison		pathkeys_cmp;
+	BMS_Comparison			bms_cmp;
+	PathRowsComparison		rows_cmp;
+	PathParallelSafeComparison parallel_safe_cmp;
+
 }			EEPath;
 
 /*

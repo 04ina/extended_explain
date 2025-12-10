@@ -19,6 +19,7 @@
 
 #include "include/extended_explain.h"
 #include "include/output_result.h"
+#include "miscadmin.h"
 
 #include "commands/defrem.h"
 
@@ -29,6 +30,8 @@
 #endif
 
 PG_MODULE_MAGIC;
+
+#define STD_FUZZ_FACTOR 1.01
 
 #if (PG_VERSION_NUM >= 180000)
 typedef struct 
@@ -57,6 +60,7 @@ static add_path_hook_type prev_add_path_hook = NULL;
 static set_rel_pathlist_hook_type prev_set_rel_pathlist_hook = NULL;
 static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
 
+
 /*
  * global_ee_state сохраняет переменные расширения,
  * необходимые для обработки одного EXPLAIN запроса.
@@ -64,6 +68,70 @@ static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
  * Инициализируется каждый раз при вызове EXPLAIN.
  */
 EEState    *global_ee_state = NULL;
+
+
+/*
+ * compare_path_costs_fuzzily
+ */
+static PathCostComparison
+compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor)
+{
+#define CONSIDER_PATH_STARTUP_COST(p)  \
+	((p)->param_info == NULL ? (p)->parent->consider_startup : (p)->parent->consider_param_startup)
+
+	/* Number of disabled nodes, if different, trumps all else. */
+	if (unlikely(path1->disabled_nodes != path2->disabled_nodes))
+	{
+		if (path1->disabled_nodes < path2->disabled_nodes)
+			return COSTS_BETTER1;
+		else
+			return COSTS_BETTER2;
+	}
+
+	/*
+	 * Check total cost first since it's more likely to be different; many
+	 * paths have zero startup cost.
+	 */
+	if (path1->total_cost > path2->total_cost * fuzz_factor)
+	{
+		/* path1 fuzzily worse on total cost */
+		if (CONSIDER_PATH_STARTUP_COST(path1) &&
+			path2->startup_cost > path1->startup_cost * fuzz_factor)
+		{
+			/* ... but path2 fuzzily worse on startup, so DIFFERENT */
+			return COSTS_DIFFERENT;
+		}
+		/* else path2 dominates */
+		return COSTS_BETTER2;
+	}
+	if (path2->total_cost > path1->total_cost * fuzz_factor)
+	{
+		/* path2 fuzzily worse on total cost */
+		if (CONSIDER_PATH_STARTUP_COST(path2) &&
+			path1->startup_cost > path2->startup_cost * fuzz_factor)
+		{
+			/* ... but path1 fuzzily worse on startup, so DIFFERENT */
+			return COSTS_DIFFERENT;
+		}
+		/* else path1 dominates */
+		return COSTS_BETTER1;
+	}
+	/* fuzzily the same on total cost ... */
+	if (path1->startup_cost > path2->startup_cost * fuzz_factor)
+	{
+		/* ... but path1 fuzzily worse on startup, so path2 wins */
+		return COSTS_BETTER2;
+	}
+	if (path2->startup_cost > path1->startup_cost * fuzz_factor)
+	{
+		/* ... but path2 fuzzily worse on startup, so path1 wins */
+		return COSTS_BETTER1;
+	}
+	/* fuzzily the same on both costs */
+	return COSTS_EQUAL;
+
+#undef CONSIDER_PATH_STARTUP_COST
+}
 
 void
 _PG_init(void)
@@ -247,45 +315,6 @@ ee_explain(Query *query, int cursorOptions,
 }
 
 /*
- * Функция для обработки хука add_path_hook.  Запоминает отношения и пути,
- * которые были рассмотрены оптимизатором при поиске наилучшего плана.
- */
-void
-ee_add_path_hook(RelOptInfo *parent_rel,
-				 Path *new_path)
-{
-
-	EERel	   *eerel;
-	MemoryContext old_ctx;
-
-	if (global_ee_state == NULL)
-		return;
-
-	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
-
-	if (global_ee_state->cached_current_rel == parent_rel)
-	{
-		eerel = global_ee_state->cached_current_eerel;
-	}
-	else
-	{
-		eerel = search_eerel(parent_rel, false);
-		if (eerel == NULL)
-		{
-			eerel = init_eerel(global_ee_state->current_eesubquery);
-			fill_eerel(eerel, parent_rel);
-		}
-
-		global_ee_state->cached_current_rel = parent_rel;
-		global_ee_state->cached_current_eerel = eerel;
-	}
-
-	create_eepath(eerel, new_path);
-
-	MemoryContextSwitchTo(old_ctx);
-}
-
-/*
  * Функция для обработки хука set_rel_pathlist_hook
  *
  * Вызывается при окончании заполнения списка путей базового отношения,
@@ -407,6 +436,8 @@ fill_eepath(EEPath * eepath, Path *path)
 	eepath->rows = path->rows;
 	eepath->startup_cost = path->startup_cost;
 	eepath->total_cost = path->total_cost;
+
+	eepath->add_path_result = APR_SAVED;
 
 	if (path->type == T_IndexPath)
 		eepath->indexoid = ((IndexPath *) path)->indexinfo->indexoid;
@@ -648,4 +679,283 @@ init_eesubquery(void)
 
 	eesubquery->eerel_list = NIL;
 	eesubquery->id = global_ee_state->eesubquery_counter++;
+}
+
+static PathRowsComparison
+compare_rows(Cardinality a, Cardinality b)
+{
+	if (a > b)
+		return ROWS_BETTER2;
+	else if (a < b)
+		return ROWS_BETTER1;
+	else 
+		return ROWS_EQUAL;
+}
+
+static PathParallelSafeComparison
+compare_parallel_safe(bool a, bool b)
+{
+	if (a > b)
+		return PARALLEL_SAFE_BETTER1;
+	else if (a < b)
+		return PARALLEL_SAFE_BETTER2;
+	else 
+		return PARALLEL_SAFE_EQUAL;
+}
+	
+static void
+mark_old_path_displaced(EEPath *old_eepath, EEPath *new_eepath, 
+						PathCostComparison costcmp, 
+						PathKeysComparison keyscmp, 
+						BMS_Comparison outercmp, 
+						PathRowsComparison rowscmp, 
+						PathParallelSafeComparison parallel_safe_cmp)
+{
+	old_eepath->add_path_result = APR_DISPLACED;
+	old_eepath->displaced_by = new_eepath->id;
+
+	old_eepath->cost_cmp = costcmp;
+	old_eepath->pathkeys_cmp = keyscmp;
+	old_eepath->bms_cmp = outercmp;
+	old_eepath->rows_cmp = rowscmp;
+	old_eepath->parallel_safe_cmp = parallel_safe_cmp;
+
+}
+
+static void
+mark_new_path_removed(EEPath *new_eepath)
+{
+	new_eepath->add_path_result = APR_REMOVED;
+}
+
+void
+ee_add_path_hook(RelOptInfo *parent_rel,
+				 Path *new_path)
+{
+	bool		accept_new = true;	/* unless we find a superior old path */
+	int			insert_at = 0;	/* where to insert new item */
+	List	   *new_path_pathkeys;
+	ListCell   *p1;
+
+	EERel	   *eerel;
+	EEPath	   *new_eepath;
+	EEPath 	   *old_eepath;
+	MemoryContext old_ctx;
+
+	if (global_ee_state == NULL)
+	{
+		standard_add_path(parent_rel, new_path);
+		return;
+	}
+
+	CHECK_FOR_INTERRUPTS();
+
+	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
+
+	if (global_ee_state->cached_current_rel == parent_rel)
+	{
+		/*
+		 * Нужное EERel отношение сохранилось в кэше.
+		 */
+		eerel = global_ee_state->cached_current_eerel;
+	}
+	else
+	{
+		/*
+		 * Нужного EERel отношения не оказалось в кэше, значит ищем его 
+		 * в списке отношений текущего подзапроса.
+		 */
+		eerel = search_eerel(parent_rel, false);
+		if (eerel == NULL)
+		{
+			/*
+			 * Если отношение не было найдено, его необходимо создать 
+			 */
+			eerel = init_eerel(global_ee_state->current_eesubquery);
+			fill_eerel(eerel, parent_rel);
+		}
+
+		/* Обновляем кэш */
+		global_ee_state->cached_current_rel = parent_rel;
+		global_ee_state->cached_current_eerel = eerel;
+	}
+
+	/*
+	 * Создаем eepath по new_path. 
+	 * 
+	 * По умолчанию путь считается сохраненным в pathlist (add_path_result = APR_SAVED), 
+	 * однако в процессе работы функции add_path данное состояние может измениться.
+	 */
+	new_eepath = create_eepath(eerel, new_path);
+
+	MemoryContextSwitchTo(old_ctx);
+
+	new_path_pathkeys = new_path->param_info ? NIL : new_path->pathkeys;
+
+	foreach(p1, parent_rel->pathlist)
+	{
+		Path	   *old_path = (Path *) lfirst(p1);
+		bool		remove_old = false; /* unless new proves superior */
+		PathCostComparison costcmp;
+		PathKeysComparison keyscmp;
+		BMS_Comparison outercmp;	
+		
+		costcmp = compare_path_costs_fuzzily(new_path, old_path,
+											 STD_FUZZ_FACTOR);
+
+		if (costcmp != COSTS_DIFFERENT)
+		{
+			List	   *old_path_pathkeys;
+
+			old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
+			keyscmp = compare_pathkeys(new_path_pathkeys,
+									   old_path_pathkeys);
+			if (keyscmp != PATHKEYS_DIFFERENT)
+			{
+				switch (costcmp)
+				{
+					case COSTS_EQUAL:
+						outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
+													  PATH_REQ_OUTER(old_path));
+						if (keyscmp == PATHKEYS_BETTER1)
+						{
+							if ((outercmp == BMS_EQUAL ||
+								 outercmp == BMS_SUBSET1) &&
+								new_path->rows <= old_path->rows &&
+								new_path->parallel_safe >= old_path->parallel_safe)
+								remove_old = true;	/* new dominates old */
+						}
+						else if (keyscmp == PATHKEYS_BETTER2)
+						{
+							if ((outercmp == BMS_EQUAL ||
+								 outercmp == BMS_SUBSET2) &&
+								new_path->rows >= old_path->rows &&
+								new_path->parallel_safe <= old_path->parallel_safe)
+								accept_new = false; /* old dominates new */
+						}
+						else	/* keyscmp == PATHKEYS_EQUAL */
+						{
+							if (outercmp == BMS_EQUAL)
+							{
+								if (new_path->parallel_safe >
+									old_path->parallel_safe)
+									remove_old = true;	/* new dominates old */
+								else if (new_path->parallel_safe <
+										 old_path->parallel_safe)
+									accept_new = false; /* old dominates new */
+								else if (new_path->rows < old_path->rows)
+									remove_old = true;	/* new dominates old */
+								else if (new_path->rows > old_path->rows)
+									accept_new = false; /* old dominates new */
+								else if (compare_path_costs_fuzzily(new_path,
+																	old_path,
+																	1.0000000001) == COSTS_BETTER1)
+									remove_old = true;	/* new dominates old */
+								else
+									accept_new = false; /* old equals or
+														 * dominates new */
+							}
+							else if (outercmp == BMS_SUBSET1 &&
+									 new_path->rows <= old_path->rows &&
+									 new_path->parallel_safe >= old_path->parallel_safe)
+								remove_old = true;	/* new dominates old */
+							else if (outercmp == BMS_SUBSET2 &&
+									 new_path->rows >= old_path->rows &&
+									 new_path->parallel_safe <= old_path->parallel_safe)
+								accept_new = false; /* old dominates new */
+							/* else different parameterizations, keep both */
+						}
+						break;
+					case COSTS_BETTER1:
+						if (keyscmp != PATHKEYS_BETTER2)
+						{
+							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
+														  PATH_REQ_OUTER(old_path));
+							if ((outercmp == BMS_EQUAL ||
+								 outercmp == BMS_SUBSET1) &&
+								new_path->rows <= old_path->rows &&
+								new_path->parallel_safe >= old_path->parallel_safe)
+								remove_old = true;	/* new dominates old */
+						}
+						break;
+					case COSTS_BETTER2:
+						if (keyscmp != PATHKEYS_BETTER1)
+						{
+							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
+														  PATH_REQ_OUTER(old_path));
+							if ((outercmp == BMS_EQUAL ||
+								 outercmp == BMS_SUBSET2) &&
+								new_path->rows >= old_path->rows &&
+								new_path->parallel_safe <= old_path->parallel_safe)
+								accept_new = false; /* old dominates new */
+						}
+						break;
+					case COSTS_DIFFERENT:
+
+						break;
+				}
+			}
+		}
+
+		/*
+		 * Remove current element from pathlist if dominated by new.
+		 */
+		if (remove_old)
+		{
+			old_eepath = search_eepath(eerel, old_path);
+
+			/*
+			 * Добавляем в old_eepath информацию о вытеснении.
+			 */
+			mark_old_path_displaced(old_eepath, new_eepath, costcmp, keyscmp, outercmp, 
+								    compare_rows(new_path->rows, old_path->rows),
+								    compare_parallel_safe(new_path->parallel_safe, old_path->parallel_safe));
+
+			parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist,
+														  p1);
+
+			/*
+			 * Delete the data pointed-to by the deleted cell, if possible
+			 */
+			if (!IsA(old_path, IndexPath))
+				pfree(old_path);
+		}
+		else
+		{
+			/*
+			 * new belongs after this old path if it has more disabled nodes
+			 * or if it has the same number of nodes but a greater total cost
+			 */
+			if (new_path->disabled_nodes > old_path->disabled_nodes ||
+				(new_path->disabled_nodes == old_path->disabled_nodes &&
+				 new_path->total_cost >= old_path->total_cost))
+				insert_at = foreach_current_index(p1) + 1;
+		}
+
+		/*
+		 * If we found an old path that dominates new_path, we can quit
+		 * scanning the pathlist; we will not add new_path, and we assume
+		 * new_path cannot dominate any other elements of the pathlist.
+		 */
+		if (!accept_new)
+			break;
+	}
+
+	if (accept_new)
+	{
+		/* Accept the new path: insert it at proper place in pathlist */
+		parent_rel->pathlist =
+			list_insert_nth(parent_rel->pathlist, insert_at, new_path);
+	}
+	else
+	{
+		/*
+		 * Путь new_path не попал в pathlist.  Ставим соответствующую пометку APR_REMOVED в new_eepath
+		 */
+		mark_new_path_removed(new_eepath);
+
+		/* Reject and recycle the new path */
+		if (!IsA(new_path, IndexPath))
+			pfree(new_path);
+	}
 }

@@ -1,38 +1,56 @@
-From bed51b8b9cd874bbf4202d0bfcf3e9372cd4e721 Mon Sep 17 00:00:00 2001
+From 8b277491bc7a4f16b4d2098f8fee8b7c0eb25038 Mon Sep 17 00:00:00 2001
 From: 04ina <o4inaDev@yandex.ru>
-Date: Mon, 13 Oct 2025 03:39:11 +0700
+Date: Wed, 10 Dec 2025 23:44:15 +0700
 Subject: [PATCH] Add add_path_hook functionality
 
 ---
- src/backend/optimizer/util/pathnode.c | 5 +++++
- src/include/optimizer/pathnode.h      | 4 ++++
- 2 files changed, 9 insertions(+)
+ src/backend/optimizer/util/pathnode.c | 15 +++++++++++++--
+ src/include/optimizer/pathnode.h      |  5 +++++
+ 2 files changed, 18 insertions(+), 2 deletions(-)
 
 diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
-index c42742d2c7..ea2583e722 100644
+index e8d8a53706..80e1526c39 100644
 --- a/src/backend/optimizer/util/pathnode.c
 +++ b/src/backend/optimizer/util/pathnode.c
-@@ -46,6 +46,8 @@ typedef enum
+@@ -49,6 +49,8 @@ typedef enum
   */
  #define STD_FUZZ_FACTOR 1.01
- 
+
 +add_path_hook_type add_path_hook = NULL;
 +
  static List *translate_sub_tlist(List *tlist, int relid);
  static int	append_total_cost_compare(const ListCell *a, const ListCell *b);
  static int	append_startup_cost_compare(const ListCell *a, const ListCell *b);
-@@ -607,6 +609,9 @@ add_path(RelOptInfo *parent_rel, Path *new_path)
- 			break;
- 	}
+@@ -388,8 +390,17 @@ set_cheapest(RelOptInfo *parent_rel)
+ 	parent_rel->cheapest_parameterized_paths = parameterized_paths;
+ }
  
++void
++add_path(RelOptInfo *parent_rel, Path *new_path)
++{
 +	if (add_path_hook)
 +		(*add_path_hook) (parent_rel, new_path);
++	else
++		standard_add_path(parent_rel, new_path);
++}
 +
- 	if (accept_new)
- 	{
- 		/* Accept the new path: insert it at proper place in pathlist */
+ /*
+- * add_path
++ * standard_add_path
+  *	  Consider a potential implementation path for the specified parent rel,
+  *	  and add it to the rel's pathlist if it is worthy of consideration.
+  *
+@@ -461,7 +472,7 @@ set_cheapest(RelOptInfo *parent_rel)
+  * Returns nothing, but modifies parent_rel->pathlist.
+  */
+ void
+-add_path(RelOptInfo *parent_rel, Path *new_path)
++standard_add_path(RelOptInfo *parent_rel, Path *new_path)
+ {
+ 	bool		accept_new = true;	/* unless we find a superior old path */
+ 	int			insert_at = 0;	/* where to insert new item */
 diff --git a/src/include/optimizer/pathnode.h b/src/include/optimizer/pathnode.h
-index 112e7c23d4..ba42b9b7ad 100644
+index 60dcdb77e4..41540f57da 100644
 --- a/src/include/optimizer/pathnode.h
 +++ b/src/include/optimizer/pathnode.h
 @@ -17,6 +17,10 @@
@@ -46,6 +64,14 @@ index 112e7c23d4..ba42b9b7ad 100644
  
  /*
   * prototypes for pathnode.c
+@@ -27,6 +31,7 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
+ 										  double fraction);
+ extern void set_cheapest(RelOptInfo *parent_rel);
+ extern void add_path(RelOptInfo *parent_rel, Path *new_path);
++extern void standard_add_path(RelOptInfo *parent_rel, Path *new_path);
+ extern bool add_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
+ 							  Cost startup_cost, Cost total_cost,
+ 							  List *pathkeys, Relids required_outer);
 -- 
 2.34.1
 

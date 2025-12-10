@@ -23,6 +23,110 @@
 #include "executor/executor.h"
 #include "catalog/namespace.h"
 
+#define NUM_OF_COLS_EEPATHS 21	
+
+static const char * 
+cost_cmp_to_string(PathCostComparison cmp)
+{
+	switch (cmp)
+	{
+		case COSTS_EQUAL:
+			return "equal";
+		case COSTS_BETTER1:
+			return "worse";
+		case COSTS_BETTER2:
+			return "better";
+		case COSTS_DIFFERENT:
+			return "different";
+		default:
+			return "unknown";
+	}
+}
+
+static const char * 
+pathkeys_cmp_to_string(PathKeysComparison cmp)
+{
+	switch (cmp)
+	{
+		case PATHKEYS_EQUAL:
+			return "equal";
+		case PATHKEYS_BETTER1:
+			return "worse";
+		case PATHKEYS_BETTER2:
+			return "better";
+		case PATHKEYS_DIFFERENT:
+			return "different";
+		default:
+			return "unknown";
+	}
+}
+
+static const char * 
+bms_cmp_to_string(BMS_Comparison cmp)
+{
+	switch (cmp)
+	{
+		case BMS_EQUAL:
+			return "equal";
+		case BMS_SUBSET1:
+			return "worse";
+		case BMS_SUBSET2:
+			return "better";
+		case BMS_DIFFERENT:
+			return "different";
+		default:
+			return "unknown";
+	}
+}
+
+static const char * 
+rows_cmp_to_string(PathRowsComparison cmp)
+{
+	switch (cmp)
+	{
+		case ROWS_EQUAL:
+			return "equal";
+		case ROWS_BETTER1:
+			return "worse";
+		case ROWS_BETTER2:
+			return "better";
+		default:
+			return "unknown";
+	}
+}
+
+static const char * 
+parallel_safe_cmp_to_string(PathParallelSafeComparison cmp)
+{
+	switch (cmp)
+	{
+		case PARALLEL_SAFE_EQUAL:
+			return "equal";
+		case PARALLEL_SAFE_BETTER1:
+			return "worse";
+		case PARALLEL_SAFE_BETTER2:
+			return "better";
+		default:
+			return "unknown";
+	}
+}
+
+static const char * 
+add_path_result_to_string(AddPathResult add_path_result)
+{
+	switch (add_path_result)
+	{
+		case APR_SAVED:
+			return "saved";
+		case APR_DISPLACED:
+			return "displaced";
+		case APR_REMOVED:
+			return "removed";
+		default:
+			return "Unknown";
+	}
+}
+
 /*
  * Получает название узла плана по его NodeTag
  */
@@ -107,13 +211,15 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 	Relation	rel;
 	TupleDesc	tupdesc;
 	HeapTuple	tuple;
-	Datum		values[14];
-	bool		nulls[14] = {false, false, false, false, false, false, false, false, false, false, false, false, false, false};
+	Datum		values[NUM_OF_COLS_EEPATHS];
+	bool		nulls[NUM_OF_COLS_EEPATHS];
 	EState	   *estate;
 
 	ListCell   *eesq_lc;
 	ListCell   *eer_lc;
 	ListCell   *eep_lc;
+
+	memset(nulls, 0x00, sizeof(bool) * NUM_OF_COLS_EEPATHS);
 
 	estate = CreateExecutorState();
 
@@ -207,6 +313,36 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 				}
 
 				values[13] = eerel->joined_rel_num;
+
+				values[14] = CStringGetTextDatum(add_path_result_to_string(eepath->add_path_result));
+				
+				if (eepath->add_path_result == APR_DISPLACED)
+				{
+					nulls[15] = false;
+					nulls[16] = false;
+					nulls[17] = false;
+					nulls[18] = false;
+					nulls[19] = false;
+					nulls[20] = false;
+
+					values[15] = Int64GetDatum(eepath->displaced_by);
+					values[16] = CStringGetTextDatum(cost_cmp_to_string(eepath->cost_cmp));
+					values[17] = CStringGetTextDatum(pathkeys_cmp_to_string(eepath->pathkeys_cmp));
+					values[18] = CStringGetTextDatum(bms_cmp_to_string(eepath->bms_cmp));
+					values[19] = CStringGetTextDatum(rows_cmp_to_string(eepath->rows_cmp));
+					values[20] = CStringGetTextDatum(parallel_safe_cmp_to_string(eepath->parallel_safe_cmp));
+				}
+				else 
+				{
+					nulls[15] = true;
+					nulls[16] = true;
+					nulls[17] = true;
+					nulls[18] = true;
+					nulls[19] = true;
+					nulls[20] = true;
+				}
+
+
 
 				/* Создание и вставка тапла */
 				tuple = heap_form_tuple(tupdesc, values, nulls);
