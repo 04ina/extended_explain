@@ -1,0 +1,77 @@
+From e5ada96cc052d86ae75eb8104fe225db80251821 Mon Sep 17 00:00:00 2001
+From: 04ina <o4inaDev@yandex.ru>
+Date: Sun, 21 Dec 2025 16:44:53 +0700
+Subject: [PATCH] Add add_path_hook functionality
+
+---
+ src/backend/optimizer/util/pathnode.c | 15 +++++++++++++--
+ src/include/optimizer/pathnode.h      |  5 +++++
+ 2 files changed, 18 insertions(+), 2 deletions(-)
+
+diff --git a/src/backend/optimizer/util/pathnode.c b/src/backend/optimizer/util/pathnode.c
+index b0da28150d3..7cab8d9d234 100644
+--- a/src/backend/optimizer/util/pathnode.c
++++ b/src/backend/optimizer/util/pathnode.c
+@@ -46,6 +46,8 @@ typedef enum
+  */
+ #define STD_FUZZ_FACTOR 1.01
+ 
++add_path_hook_type add_path_hook = NULL;
++
+ static int	append_total_cost_compare(const ListCell *a, const ListCell *b);
+ static int	append_startup_cost_compare(const ListCell *a, const ListCell *b);
+ static List *reparameterize_pathlist_by_child(PlannerInfo *root,
+@@ -383,8 +385,17 @@ set_cheapest(RelOptInfo *parent_rel)
+ 	parent_rel->cheapest_parameterized_paths = parameterized_paths;
+ }
+ 
++void
++add_path(RelOptInfo *parent_rel, Path *new_path)
++{
++	if (add_path_hook)
++		(*add_path_hook) (parent_rel, new_path);
++	else
++		standard_add_path(parent_rel, new_path);
++}
++
+ /*
+- * add_path
++ * standard_add_path
+  *	  Consider a potential implementation path for the specified parent rel,
+  *	  and add it to the rel's pathlist if it is worthy of consideration.
+  *
+@@ -456,7 +467,7 @@ set_cheapest(RelOptInfo *parent_rel)
+  * Returns nothing, but modifies parent_rel->pathlist.
+  */
+ void
+-add_path(RelOptInfo *parent_rel, Path *new_path)
++standard_add_path(RelOptInfo *parent_rel, Path *new_path)
+ {
+ 	bool		accept_new = true;	/* unless we find a superior old path */
+ 	int			insert_at = 0;	/* where to insert new item */
+diff --git a/src/include/optimizer/pathnode.h b/src/include/optimizer/pathnode.h
+index 763cd25bb3c..25e033819ff 100644
+--- a/src/include/optimizer/pathnode.h
++++ b/src/include/optimizer/pathnode.h
+@@ -17,6 +17,10 @@
+ #include "nodes/bitmapset.h"
+ #include "nodes/pathnodes.h"
+ 
++/* Hook for plugins to get control in add_path_hook() */
++typedef void (*add_path_hook_type)(RelOptInfo *parent_rel,
++									Path *new_path);
++extern PGDLLIMPORT add_path_hook_type add_path_hook;
+ 
+ /*
+  * prototypes for pathnode.c
+@@ -27,6 +31,7 @@ extern int	compare_fractional_path_costs(Path *path1, Path *path2,
+ 										  double fraction);
+ extern void set_cheapest(RelOptInfo *parent_rel);
+ extern void add_path(RelOptInfo *parent_rel, Path *new_path);
++extern void standard_add_path(RelOptInfo *parent_rel, Path *new_path);
+ extern bool add_path_precheck(RelOptInfo *parent_rel, int disabled_nodes,
+ 							  Cost startup_cost, Cost total_cost,
+ 							  List *pathkeys, Relids required_outer);
+-- 
+2.34.1
+

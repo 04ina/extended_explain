@@ -23,7 +23,7 @@
 #include "executor/executor.h"
 #include "catalog/namespace.h"
 
-#define NUM_OF_COLS_EEPATHS 21	
+#define NUM_OF_COLS_EEPATHS 22
 
 static const char * 
 cost_cmp_to_string(PathCostComparison cmp)
@@ -244,8 +244,8 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 				tupdesc = RelationGetDescr(rel);
 
 				values[0] = Int64GetDatum(query_id);
-				nulls[1] = true;
-				values[2] = Int64GetDatum(eesubquery->id);
+				values[1] = Int64GetDatum(eesubquery->id);
+				values[2] = Int64GetDatum(eesubquery->subquery_level);
 				values[3] = Int64GetDatum(eerel->id);
 				values[4] = Int64GetDatum(eepath->id);
 
@@ -288,61 +288,67 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 				values[7] = Float8GetDatum(eepath->startup_cost);
 				values[8] = Float8GetDatum(eepath->total_cost);
 				values[9] = Int64GetDatum(eepath->rows);
-				values[10] = BoolGetDatum(eepath->is_del);
+				values[10] = Int64GetDatum(eerel->width);
 
-				if (eerel->eref == NULL)
+				if (eerel->name == NULL)
 				{
 					nulls[11] = true;
-					values[11] = (Datum) 0;
 				}
 				else
 				{
 					nulls[11] = false;
-					values[11] = CStringGetTextDatum(eerel->eref->aliasname);
+					values[11] = CStringGetTextDatum(eerel->name);
 				}
 
-				if (eepath->indexoid == 0)
+				if (eerel->alias == NULL)
 				{
 					nulls[12] = true;
-					values[12] = (Datum) 0;
 				}
 				else
 				{
 					nulls[12] = false;
-					values[12] = ObjectIdGetDatum(eepath->indexoid);
+					values[12] = CStringGetTextDatum(eerel->alias);
 				}
 
-				values[13] = eerel->joined_rel_num;
+				if (eepath->indexoid == 0)
+				{
+					nulls[13] = true;
+				}
+				else
+				{
+					nulls[13] = false;
+					values[13] = ObjectIdGetDatum(eepath->indexoid);
+				}
 
-				values[14] = CStringGetTextDatum(add_path_result_to_string(eepath->add_path_result));
+				values[14] = eerel->joined_rel_num;
+
+				values[15] = CStringGetTextDatum(add_path_result_to_string(eepath->add_path_result));
 				
 				if (eepath->add_path_result == APR_DISPLACED)
 				{
-					nulls[15] = false;
 					nulls[16] = false;
 					nulls[17] = false;
 					nulls[18] = false;
 					nulls[19] = false;
 					nulls[20] = false;
+					nulls[21] = false;
 
-					values[15] = Int64GetDatum(eepath->displaced_by);
-					values[16] = CStringGetTextDatum(cost_cmp_to_string(eepath->cost_cmp));
-					values[17] = CStringGetTextDatum(pathkeys_cmp_to_string(eepath->pathkeys_cmp));
-					values[18] = CStringGetTextDatum(bms_cmp_to_string(eepath->bms_cmp));
-					values[19] = CStringGetTextDatum(rows_cmp_to_string(eepath->rows_cmp));
-					values[20] = CStringGetTextDatum(parallel_safe_cmp_to_string(eepath->parallel_safe_cmp));
+					values[16] = Int64GetDatum(eepath->displaced_by);
+					values[17] = CStringGetTextDatum(cost_cmp_to_string(eepath->cost_cmp));
+					values[18] = CStringGetTextDatum(pathkeys_cmp_to_string(eepath->pathkeys_cmp));
+					values[19] = CStringGetTextDatum(bms_cmp_to_string(eepath->bms_cmp));
+					values[20] = CStringGetTextDatum(rows_cmp_to_string(eepath->rows_cmp));
+					values[21] = CStringGetTextDatum(parallel_safe_cmp_to_string(eepath->parallel_safe_cmp));
 				}
 				else 
 				{
-					nulls[15] = true;
 					nulls[16] = true;
 					nulls[17] = true;
 					nulls[18] = true;
 					nulls[19] = true;
 					nulls[20] = true;
+					nulls[21] = true;
 				}
-
-
 
 				/* Создание и вставка тапла */
 				tuple = heap_form_tuple(tupdesc, values, nulls);
