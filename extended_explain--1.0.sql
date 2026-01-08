@@ -106,3 +106,14 @@ CREATE TABLE ee.paths
 
 	FOREIGN KEY (query_id) REFERENCES  ee.query(id)
 );
+
+/* 
+ * Функция очистки таблиц ee.query и ee.paths
+ */
+CREATE FUNCTION ee.clear()
+RETURNS boolean AS $$
+BEGIN
+    TRUNCATE TABLE ee.query CASCADE;
+	RETURN true;
+END;
+$$ LANGUAGE plpgsql;
