@@ -177,6 +177,7 @@ typedef struct EERel
 	 * Определяет принадлежность путей к конкретному отношению.
 	 */
 	List	   *eepath_list;
+
 }			EERel;
 
 /*
@@ -201,16 +202,33 @@ typedef struct EESubQuery
 	 * Определяет принадлежность отношений к конкретному запросу/подзапросу.
 	 */
 	List	   *eerel_list;
-
 }			EESubQuery;
+
+typedef struct EERelHashEntry
+{
+    void		*roi_ptr;
+    EERel		*eerel;
+} EERelHashEntry;
+
+typedef struct EEPathHashKey
+{
+    void		*path_ptr;
+	Cardinality rows;
+	Cost		startup_cost;
+	Cost		total_cost;
+} EEPathHashKey;
+
+typedef struct EEPathHashEntry
+{
+	EEPathHashKey	key;
+    EEPath     		*eepath;
+} EEPathHashEntry;
 
 /*
  * EEState определяет основные переменные расширения extended_explain
  */
 typedef struct EEState
 {
-	MemoryContext ctx;
-
 	/*
 	 * Список запросов/подзапросов.
 	 */
@@ -240,6 +258,9 @@ typedef struct EEState
 
 	RelOptInfo	*cached_current_rel;
 	EERel		*cached_current_eerel;
+
+	HTAB	*eerel_by_roi;
+	HTAB	*eepath_by_path;
 }			EEState;
 
 /*
@@ -282,19 +303,16 @@ extern void ee_process_upper_paths(PlannerInfo *root,
 								   RelOptInfo *output_rel,
 								   void *extra);
 
-extern EEState * init_ee_state(void);
-extern void delete_ee_state(EEState * ee_state);
+extern EEState * create_ee_state(void);
 
-extern EEPath * create_eepath(EERel * eerel, Path *new_path);
 extern int	get_subpath_num(Path *path);
 
-extern EEPath * init_eepath(EERel *eerel);
-extern EEPath * search_eepath(EERel *eerel, Path *path);
-extern void fill_eepath(EEPath * eepath, Path *path);
+extern EEPath * create_eepath(Path *path, EERel *eerel);
+extern EEPath * search_eepath(Path *path);
+extern EEPath * record_eepath(EERel * eerel, Path *new_path);
 
-extern EERel * init_eerel(EESubQuery *eesubquery);
-extern EERel * search_eerel(RelOptInfo *roi, bool search_in_other_eesubqueries);
-extern void fill_eerel(EERel * eerel, RelOptInfo *roi);
+extern EERel * create_eerel(RelOptInfo *roi);
+extern EERel * search_eerel(RelOptInfo *roi);
 
 extern void init_eesubquery(void);
 

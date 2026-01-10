@@ -66,7 +66,8 @@ static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
  *
  * Инициализируется каждый раз при вызове EXPLAIN.
  */
-EEState    *global_ee_state = NULL;
+EEState    		*global_ee_state = NULL;
+MemoryContext 	ee_ctx;
 
 static PathCostComparison	compare_path_costs_fuzzily(Path *path1, 
 													   Path *path2, 
@@ -179,15 +180,15 @@ get_add_paths_setting(struct ExplainState *es)
  * Инициализация глобального состояния
  */
 EEState *
-init_ee_state(void)
+create_ee_state(void)
 {
-	EEState    *ee_state;
+	EEState	*ee_state;
+	HASHCTL	ctl;
+	MemoryContext old_ctx;
+
+	old_ctx = MemoryContextSwitchTo(ee_ctx);
 
 	ee_state = (EEState *) palloc0(sizeof(EEState));
-
-	ee_state->ctx = AllocSetContextCreate(TopMemoryContext,
-										  "extended explain context",
-										  ALLOCSET_DEFAULT_SIZES);
 
 	ee_state->eesubquery_list = NIL;
 
@@ -195,17 +196,21 @@ init_ee_state(void)
 	ee_state->eerel_counter = 1;
 	ee_state->eesubquery_counter = 1;
 
-	return ee_state;
-}
+	memset(&ctl, 0, sizeof(HASHCTL));
+	ctl.keysize = sizeof(uintptr_t);
+	ctl.entrysize = sizeof(EERelHashEntry);
+	ctl.hcxt = ee_ctx;
+	ee_state->eerel_by_roi = hash_create("EERel by RelOptInfo*", 32, &ctl, HASH_ELEM | HASH_CONTEXT | HASH_BLOBS);
 
-/*
- * Удаление глобального состояния
- */
-void
-delete_ee_state(EEState * ee_state)
-{
-	MemoryContextReset(ee_state->ctx);
-	pfree(ee_state);
+	memset(&ctl, 0, sizeof(HASHCTL));
+	ctl.keysize = sizeof(uintptr_t) + sizeof(Cardinality) + 2 * sizeof(Cost);
+	ctl.entrysize = sizeof(EEPathHashEntry);
+	ctl.hcxt = ee_ctx;
+	ee_state->eepath_by_path = hash_create("EEPath by path*", 32, &ctl, HASH_ELEM | HASH_CONTEXT | HASH_BLOBS);
+
+	MemoryContextSwitchTo(old_ctx);
+
+	return ee_state;
 }
 
 /* ----------------------------------------------------------------
@@ -241,7 +246,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 
 	CHECK_FOR_INTERRUPTS();
 
-	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
+	old_ctx = MemoryContextSwitchTo(ee_ctx);
 
 	if (global_ee_state->cached_current_rel == parent_rel)
 	{
@@ -256,14 +261,13 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 		 * Нужного EERel отношения не оказалось в кэше, значит ищем его 
 		 * в списке отношений текущего подзапроса.
 		 */
-		eerel = search_eerel(parent_rel, false);
+		eerel = search_eerel(parent_rel);
 		if (eerel == NULL)
 		{
 			/*
 			 * Если отношение не было найдено, его необходимо создать 
 			 */
-			eerel = init_eerel(global_ee_state->current_eesubquery);
-			fill_eerel(eerel, parent_rel);
+			eerel = create_eerel(parent_rel);
 		}
 
 		/* Обновляем кэш */
@@ -277,7 +281,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 	 * По умолчанию путь считается сохраненным в pathlist (add_path_result = APR_SAVED), 
 	 * однако в процессе работы функции add_path данное состояние может измениться.
 	 */
-	new_eepath = create_eepath(eerel, new_path);
+	new_eepath = record_eepath(eerel, new_path);
 
 	MemoryContextSwitchTo(old_ctx);
 
@@ -392,7 +396,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 		 */
 		if (remove_old)
 		{
-			old_eepath = search_eepath(eerel, old_path);
+			old_eepath = search_eepath(old_path);
 
 			/*
 			 * Добавляем в old_eepath информацию о вытеснении.
@@ -452,7 +456,11 @@ ee_explain(Query *query, int cursorOptions,
 	{
 		int64		query_id;
 
-		global_ee_state = init_ee_state();
+		ee_ctx = AllocSetContextCreate(TopMemoryContext,
+									   "extended explain context",
+									   ALLOCSET_DEFAULT_SIZES);
+
+		global_ee_state = create_ee_state();
 
 		init_eesubquery();
 
@@ -463,13 +471,14 @@ ee_explain(Query *query, int cursorOptions,
 
 		insert_paths_into_eepaths(query_id, global_ee_state);
 
-		delete_ee_state(global_ee_state);
+		MemoryContextReset(ee_ctx);
+
 		global_ee_state = NULL;
 	}
 	else
 	{
 		standard_ExplainOneQuery(query, cursorOptions, into, es,
-								queryString, params, queryEnv);
+								 queryString, params, queryEnv);
 	}
 }
 
@@ -494,12 +503,12 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 	if (global_ee_state == NULL)
 		return;
 
-	old_ctx = MemoryContextSwitchTo(global_ee_state->ctx);
+	old_ctx = MemoryContextSwitchTo(ee_ctx);
 
 	if (global_ee_state->cached_current_rel == rel)
 		eerel = global_ee_state->cached_current_eerel; 
 	else
-		eerel = search_eerel(rel, false);
+		eerel = search_eerel(rel);
 
 	eerel->name = get_rel_name(rte->relid);
 
@@ -539,64 +548,18 @@ ee_process_upper_paths(PlannerInfo *root,
  */
 
 /*
- * Функция инициализации eepath пути
+ * Функция создания eepath пути
  */
 EEPath *
-init_eepath(EERel *eerel)
+create_eepath(Path *path, EERel *eerel)
 {
-	EEPath	   *eepath = (EEPath *) palloc0(sizeof(EEPath));
+	EEPathHashEntry *entry;
+	EEPathHashKey 	key;
 
-	/*
-	 * Добавляем eepath в список путей отношения
-	 * eerel
-	 */
-	eerel->eepath_list = lappend(eerel->eepath_list, eepath);
+	EEPath	   *eepath = (EEPath *) palloc0(sizeof(EEPath));
 
 	eepath->id = global_ee_state->eepath_counter++;
 
-	return eepath;
-}
-
-/*
- * Функция поиска пути eepath, соответствующего исходному пути path.
- *
- * Если функция не нашла путь, то она вернет NULL.
- *
- * TODO:
- * 1. На данный момент поиск реализован перебором списка global_ee_state->eepath_list.
- * В будущем имеет смысл использовать более быстрый алгоритм.
- *
- * 2. Требуется более надежная идентификация путей.
- */
-EEPath *
-search_eepath(EERel *eerel, Path *path)
-{
-	ListCell   *cl;
-
-	if (eerel == NULL)
-		return NULL;
-
-	foreach(cl, eerel->eepath_list)
-	{
-		EEPath	   *eepath = (EEPath *) lfirst(cl);
-
-		if (eepath->path_pointer == path && 
-			eepath->rows == path->rows && 
-			eepath->startup_cost == path->startup_cost && 
-			eepath->total_cost == path->total_cost)
-		{
-			return eepath;
-		}
-	}
-	return NULL;
-}
-
-/*
- * Функция заполнения пути eepath
- */
-void
-fill_eepath(EEPath * eepath, Path *path)
-{
 	eepath->path_pointer = path;
 	eepath->pathtype = path->pathtype;
 
@@ -613,6 +576,51 @@ fill_eepath(EEPath * eepath, Path *path)
 		eepath->indexoid = ((IndexPath *) path)->indexinfo->indexoid;
 	else
 		eepath->indexoid = 0;
+
+	eerel->eepath_list = lappend(eerel->eepath_list, eepath);
+
+    key.path_ptr = path;
+	key.rows = path->rows;
+	key.startup_cost = path->startup_cost;
+	key.total_cost = path->total_cost;
+    entry = (EEPathHashEntry *) hash_search(global_ee_state->eepath_by_path,
+										   &key,
+        								   HASH_ENTER,
+        								   NULL);
+	
+	entry->eepath = eepath;
+
+	return eepath;
+}
+
+/*
+ * Функция поиска пути eepath, соответствующего исходному пути path.
+ *
+ * Если функция не нашла путь, то она вернет NULL.
+ *
+ * TODO:
+ *	Требуется более надежная идентификация путей.
+ */
+EEPath *
+search_eepath(Path *path)
+{
+	EEPathHashEntry *entry;
+	EEPathHashKey 	key;
+
+    key.path_ptr = path;
+	key.rows = path->rows;
+	key.startup_cost = path->startup_cost;
+	key.total_cost = path->total_cost;
+
+	entry = (EEPathHashEntry *) hash_search(global_ee_state->eepath_by_path,
+										   &key,
+										   HASH_FIND,
+										   NULL);
+
+	if (entry)
+		return entry->eepath;
+	else
+		return NULL;
 }
 
 /*
@@ -662,12 +670,12 @@ get_subpath_num(Path *path)
 }
 
 /*
- * create_eepath -- функция сохранения пути Path в путь EEPath
+ * record_eepath -- функция сохранения пути Path в путь EEPath
  *
  * Для создания необходим исходный путь из планировщика и EERel -- отношение со списком eepath путей
  */
 EEPath *
-create_eepath(EERel * eerel, Path *new_path)
+record_eepath(EERel * eerel, Path *new_path)
 {
 	EEPath	   *eepath;
 
@@ -678,14 +686,13 @@ create_eepath(EERel * eerel, Path *new_path)
 	 * ранее.
 	 */
 	if (eerel == NULL)
-		eerel = search_eerel(new_path->parent, false);
+		eerel = search_eerel(new_path->parent);
 
 	/*
 	 * Инициализируем и заполняем eepath характеристиками пути
 	 * new_path
 	 */
-	eepath = init_eepath(eerel);
-	fill_eepath(eepath, new_path);
+	eepath = create_eepath(new_path, eerel);
 
 	/*
 	 * Получаем количество возможных дочерних путей
@@ -699,11 +706,10 @@ create_eepath(EERel * eerel, Path *new_path)
 	{
 		EERel *sub_eerel;
 
-		sub_eerel = search_eerel(GET_SUB_PATH(new_path)->parent, 
-								 nodeTag(new_path) == T_SubqueryScanPath);
+		sub_eerel = search_eerel(GET_SUB_PATH(new_path)->parent);
 
 		/* Связываем eepath с дочерним путем */
-		eepath->sub_eepath_1 = search_eepath(sub_eerel, GET_SUB_PATH(new_path));
+		eepath->sub_eepath_1 = search_eepath(GET_SUB_PATH(new_path));
 
 		/*
 		 * Если мы не находим дочерний узел в списке, 
@@ -713,25 +719,25 @@ create_eepath(EERel * eerel, Path *new_path)
 		 * В таком случае создаем дочерний путь отдельно.
 		 */
 		if (eepath->sub_eepath_1 == NULL)
-			eepath->sub_eepath_1 = create_eepath(sub_eerel, GET_SUB_PATH(new_path));
+			eepath->sub_eepath_1 = record_eepath(sub_eerel, GET_SUB_PATH(new_path));
 	}
 	else if (eepath->nsub == 2)	/* Два дочерних пути */
 	{
 		EERel *outer_eerel;
 		EERel *inner_eerel;
 
-		outer_eerel = search_eerel(GET_OUTER_PATH(new_path)->parent, false);
+		outer_eerel = search_eerel(GET_OUTER_PATH(new_path)->parent);
 
-		inner_eerel = search_eerel(GET_INNER_PATH(new_path)->parent, false);
+		inner_eerel = search_eerel(GET_INNER_PATH(new_path)->parent);
 
 		/* Связываем eepath с дочернии путями */
-		eepath->sub_eepath_1 = search_eepath(outer_eerel, GET_OUTER_PATH(new_path));
+		eepath->sub_eepath_1 = search_eepath(GET_OUTER_PATH(new_path));
 		if (eepath->sub_eepath_1 == NULL)
-			eepath->sub_eepath_1 = create_eepath(outer_eerel, GET_OUTER_PATH(new_path));
+			eepath->sub_eepath_1 = record_eepath(outer_eerel, GET_OUTER_PATH(new_path));
 
-		eepath->sub_eepath_2 = search_eepath(inner_eerel, GET_INNER_PATH(new_path));
+		eepath->sub_eepath_2 = search_eepath(GET_INNER_PATH(new_path));
 		if (eepath->sub_eepath_2 == NULL)
-			eepath->sub_eepath_2 = create_eepath(inner_eerel, GET_INNER_PATH(new_path));
+			eepath->sub_eepath_2 = record_eepath(inner_eerel, GET_INNER_PATH(new_path));
 	}
 
 	return eepath;
@@ -743,18 +749,30 @@ create_eepath(EERel * eerel, Path *new_path)
  */
 
 /*
- * Функция инициализации eerel отношения.
+ * Функция создания eerel отношения.
  */
 EERel *
-init_eerel(EESubQuery *eesubquery)
+create_eerel(RelOptInfo *roi)
 {
+	EERelHashEntry 	*entry;
 	EERel	   *eerel = (EERel *) palloc0(sizeof(EERel));
 
-	eesubquery->eerel_list = lappend(eesubquery->eerel_list, eerel);
+	eerel->roi_pointer = roi;
+	eerel->width = roi->reltarget->width;
+	eerel->id = global_ee_state->eerel_counter++;
+	eerel->joined_rel_num = bms_num_members(roi->relids);
+
 	eerel->name = NULL;
 	eerel->alias = NULL;
-	eerel->width = 0;
-	eerel->id = global_ee_state->eerel_counter++;
+
+	global_ee_state->current_eesubquery->eerel_list = lappend(global_ee_state->current_eesubquery->eerel_list, eerel);
+
+    entry = (EERelHashEntry *) hash_search(global_ee_state->eerel_by_roi,
+										   (void *) &eerel->roi_pointer,
+        								   HASH_ENTER,
+        								   NULL);
+
+    entry->eerel = eerel;
 
 	return eerel;
 }
@@ -763,72 +781,21 @@ init_eerel(EESubQuery *eesubquery)
  * Функция поиска eerel по структуре RelOptInfo
  *
  * Если функция не нашла отношение, то она вернет NULL.
- *
- * Поддерживает поиск как по текущему, так и по всем подзапросам
- * 
- * TODO:
- * Реализовать более быстрый алгоритм поиска
  */
 EERel *
-search_eerel(RelOptInfo *roi, bool search_in_other_eesubqueries)
+search_eerel(RelOptInfo *roi)
 {
-	ListCell   *eesq_lc;
-	ListCell   *eer_lc;
+	EERelHashEntry 	*entry;
+	
+	entry = (EERelHashEntry *) hash_search(global_ee_state->eerel_by_roi,
+										   &roi,
+										   HASH_FIND,
+										   NULL);
 
-	if (search_in_other_eesubqueries)
-	{
-		/*
-		 * Ищет eerel среди всех отношений
-		 */
-		foreach(eesq_lc, global_ee_state->eesubquery_list)
-		{
-			EESubQuery	*eesubquery = (EESubQuery *) lfirst(eesq_lc);
-			
-			foreach(eer_lc, eesubquery->eerel_list)
-			{
-				EERel	   *eerel = (EERel *) lfirst(eer_lc);
-
-				if (eerel->roi_pointer == roi)
-				{
-					return eerel;
-				}
-			}
-		}
-	}
+	if (entry)
+		return entry->eerel;
 	else
-	{
-		/*
-		 * Ищет eerel в текущем подзапросе
-		 */
-		foreach(eer_lc, global_ee_state->current_eesubquery->eerel_list)
-		{
-			EERel	   *eerel = (EERel *) lfirst(eer_lc);
-
-			if (eerel->roi_pointer == roi)
-			{
-				return eerel;
-			}
-		}
-	}
-
-	return NULL;
-}
-
-/*
- * Функция заполнения отношения eerel
- *
- * roi_pointer является однозначным идентификатором eerel отношения,
- * поскольку отношения не могут удалиться в процессе перебора путей.
- *
- */
-void
-fill_eerel(EERel * eerel, RelOptInfo *roi)
-{
-	eerel->roi_pointer = roi;
-
-	eerel->width = roi->reltarget->width;
-
-	eerel->joined_rel_num = bms_num_members(roi->relids);
+		return NULL;
 }
 
 /* ----------------------------------------------------------------
@@ -842,14 +809,21 @@ fill_eerel(EERel * eerel, RelOptInfo *roi)
 void
 init_eesubquery(void)
 {
-	EESubQuery	   *eesubquery = (EESubQuery *) palloc0(sizeof(EESubQuery));
+	EESubQuery		*eesubquery;
+	MemoryContext 	old_ctx;
 
+	old_ctx = MemoryContextSwitchTo(ee_ctx);
+
+	eesubquery = (EESubQuery *) palloc0(sizeof(EESubQuery));
+
+	global_ee_state->current_eesubquery = eesubquery;
 	global_ee_state->eesubquery_list = lappend(global_ee_state->eesubquery_list, 
 											   eesubquery);
-	global_ee_state->current_eesubquery = eesubquery;
 
 	eesubquery->eerel_list = NIL;
 	eesubquery->id = global_ee_state->eesubquery_counter++;
+
+	MemoryContextSwitchTo(old_ctx);
 }
 
 /* ----------------------------------------------------------------
