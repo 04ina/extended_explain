@@ -76,6 +76,7 @@ static PathRowsComparison	compare_rows(Cardinality a, Cardinality b);
 static PathParallelSafeComparison	compare_parallel_safe(bool a, bool b);
 static void	mark_old_path_displaced(EEPath *old_eepath, EEPath *new_eepath, 
 									PathCostComparison costcmp, 
+									double fuzz_factor,
 									PathKeysComparison keyscmp, 
 									BMS_Comparison outercmp, 
 									PathRowsComparison rowscmp, 
@@ -289,14 +290,17 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 
 	foreach(p1, parent_rel->pathlist)
 	{
-		Path	   *old_path = (Path *) lfirst(p1);
+		Path		*old_path = (Path *) lfirst(p1);
 		bool		remove_old = false; /* unless new proves superior */
+		double		fuzz_factor = STD_FUZZ_FACTOR;
+
 		PathCostComparison costcmp;
 		PathKeysComparison keyscmp;
 		BMS_Comparison outercmp;	
+
 		
 		costcmp = compare_path_costs_fuzzily(new_path, old_path,
-											 STD_FUZZ_FACTOR);
+											 fuzz_factor);
 
 		if (costcmp != COSTS_DIFFERENT)
 		{
@@ -342,13 +346,21 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 									remove_old = true;	/* new dominates old */
 								else if (new_path->rows > old_path->rows)
 									accept_new = false; /* old dominates new */
-								else if (compare_path_costs_fuzzily(new_path,
-																	old_path,
-																	1.0000000001) == COSTS_BETTER1)
-									remove_old = true;	/* new dominates old */
 								else
-									accept_new = false; /* old equals or
-														 * dominates new */
+								{
+									fuzz_factor = 1.0000000001;
+
+									costcmp = compare_path_costs_fuzzily(new_path,
+																		 old_path,
+																		 fuzz_factor);
+
+									if (costcmp == DISABLED_NODES_BETTER1 || 
+										costcmp == TOTAL_AND_STARTUP_BETTER1 || 
+										costcmp == TOTAL_EQUAL_STARTUP_BETTER1)
+										remove_old = true;	/* new dominates old */
+									else 
+										accept_new = false; /* old equals or dominates new */
+								}
 							}
 							else if (outercmp == BMS_SUBSET1 &&
 									 new_path->rows <= old_path->rows &&
@@ -361,7 +373,9 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 							/* else different parameterizations, keep both */
 						}
 						break;
-					case COSTS_BETTER1:
+					case DISABLED_NODES_BETTER1:
+					case TOTAL_AND_STARTUP_BETTER1:
+					case TOTAL_EQUAL_STARTUP_BETTER1:
 						if (keyscmp != PATHKEYS_BETTER2)
 						{
 							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
@@ -373,7 +387,9 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 								remove_old = true;	/* new dominates old */
 						}
 						break;
-					case COSTS_BETTER2:
+					case DISABLED_NODES_BETTER2:
+					case TOTAL_AND_STARTUP_BETTER2:
+					case TOTAL_EQUAL_STARTUP_BETTER2:
 						if (keyscmp != PATHKEYS_BETTER1)
 						{
 							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
@@ -401,7 +417,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 			/*
 			 * Добавляем в old_eepath информацию о вытеснении.
 			 */
-			mark_old_path_displaced(old_eepath, new_eepath, costcmp, keyscmp, outercmp, 
+			mark_old_path_displaced(old_eepath, new_eepath, costcmp, fuzz_factor, keyscmp, outercmp, 
 								    compare_rows(new_path->rows, old_path->rows),
 								    compare_parallel_safe(new_path->parallel_safe, old_path->parallel_safe));
 
@@ -844,9 +860,9 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor)
 	if (unlikely(path1->disabled_nodes != path2->disabled_nodes))
 	{
 		if (path1->disabled_nodes < path2->disabled_nodes)
-			return COSTS_BETTER1;
+			return DISABLED_NODES_BETTER1;
 		else
-			return COSTS_BETTER2;
+			return DISABLED_NODES_BETTER2;
 	}
 
 	/*
@@ -863,7 +879,7 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor)
 			return COSTS_DIFFERENT;
 		}
 		/* else path2 dominates */
-		return COSTS_BETTER2;
+		return TOTAL_AND_STARTUP_BETTER2;
 	}
 	if (path2->total_cost > path1->total_cost * fuzz_factor)
 	{
@@ -875,18 +891,18 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor)
 			return COSTS_DIFFERENT;
 		}
 		/* else path1 dominates */
-		return COSTS_BETTER1;
+		return TOTAL_AND_STARTUP_BETTER1;
 	}
 	/* fuzzily the same on total cost ... */
 	if (path1->startup_cost > path2->startup_cost * fuzz_factor)
 	{
 		/* ... but path1 fuzzily worse on startup, so path2 wins */
-		return COSTS_BETTER2; /* STARTUP_COST_BETTER2 */
+		return TOTAL_EQUAL_STARTUP_BETTER2; /* STARTUP_COST_BETTER2 */
 	}
 	if (path2->startup_cost > path1->startup_cost * fuzz_factor)
 	{
 		/* ... but path2 fuzzily worse on startup, so path1 wins */
-		return COSTS_BETTER1; /* STARTUP_COST_BETTER2 */
+		return TOTAL_EQUAL_STARTUP_BETTER1; /* STARTUP_COST_BETTER2 */
 	}
 	/* fuzzily the same on both costs */
 	return COSTS_EQUAL;
@@ -928,6 +944,7 @@ compare_parallel_safe(bool a, bool b)
 static void
 mark_old_path_displaced(EEPath *old_eepath, EEPath *new_eepath, 
 						PathCostComparison costcmp, 
+						double fuzz_factor,
 						PathKeysComparison keyscmp, 
 						BMS_Comparison outercmp, 
 						PathRowsComparison rowscmp, 
@@ -935,6 +952,7 @@ mark_old_path_displaced(EEPath *old_eepath, EEPath *new_eepath,
 {
 	old_eepath->add_path_result = APR_DISPLACED;
 	old_eepath->displaced_by = new_eepath->id;
+	old_eepath->fuzz_factor = fuzz_factor;
 
 	old_eepath->cost_cmp = costcmp;
 	old_eepath->pathkeys_cmp = keyscmp;

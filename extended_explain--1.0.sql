@@ -99,6 +99,7 @@ CREATE TABLE ee.paths
 	 * Результаты сравнения характеристик вытесняемого и вытесняющего путей
 	 */
 	cost_cmp text,
+	fuzz_factor double precision,
 	pathkeys_cmp text,
 	bms_cmp text,
 	rows_cmp text,

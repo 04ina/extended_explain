@@ -51,8 +51,12 @@ typedef enum
 typedef enum
 {
 	COSTS_EQUAL,
-	COSTS_BETTER1,
-	COSTS_BETTER2,
+	DISABLED_NODES_BETTER1,
+	DISABLED_NODES_BETTER2,
+	TOTAL_AND_STARTUP_BETTER1,
+	TOTAL_AND_STARTUP_BETTER2,
+	TOTAL_EQUAL_STARTUP_BETTER1,
+	TOTAL_EQUAL_STARTUP_BETTER2,
 	COSTS_DIFFERENT,
 } PathCostComparison;
 
@@ -115,6 +119,7 @@ typedef struct EEPath
 
 	/* Результаты сравнения при вытеснении */
 	PathCostComparison		cost_cmp;			
+	double					fuzz_factor;
 	PathKeysComparison		pathkeys_cmp;
 	BMS_Comparison			bms_cmp;
 	PathRowsComparison		rows_cmp;

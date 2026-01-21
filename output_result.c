@@ -23,7 +23,7 @@
 #include "executor/executor.h"
 #include "catalog/namespace.h"
 
-#define NUM_OF_COLS_EEPATHS 22
+#define NUM_OF_COLS_EEPATHS 23
 
 static const char * 
 cost_cmp_to_string(PathCostComparison cmp)
@@ -32,10 +32,18 @@ cost_cmp_to_string(PathCostComparison cmp)
 	{
 		case COSTS_EQUAL:
 			return "equal";
-		case COSTS_BETTER1:
-			return "worse";
-		case COSTS_BETTER2:
-			return "better";
+		case DISABLED_NODES_BETTER1:
+			return "disabled nodes worse";
+		case TOTAL_AND_STARTUP_BETTER1:
+			return "total and startup worse";
+		case TOTAL_EQUAL_STARTUP_BETTER1:
+			return "total equal, startup worse";
+		case DISABLED_NODES_BETTER2:
+			return "disabled nodes better";
+		case TOTAL_AND_STARTUP_BETTER2:
+			return "total and startup better";
+		case TOTAL_EQUAL_STARTUP_BETTER2:
+			return "total equal, startup better";
 		case COSTS_DIFFERENT:
 			return "different";
 		default:
@@ -332,13 +340,15 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 					nulls[19] = false;
 					nulls[20] = false;
 					nulls[21] = false;
+					nulls[22] = false;
 
 					values[16] = Int64GetDatum(eepath->displaced_by);
 					values[17] = CStringGetTextDatum(cost_cmp_to_string(eepath->cost_cmp));
-					values[18] = CStringGetTextDatum(pathkeys_cmp_to_string(eepath->pathkeys_cmp));
-					values[19] = CStringGetTextDatum(bms_cmp_to_string(eepath->bms_cmp));
-					values[20] = CStringGetTextDatum(rows_cmp_to_string(eepath->rows_cmp));
-					values[21] = CStringGetTextDatum(parallel_safe_cmp_to_string(eepath->parallel_safe_cmp));
+					values[18] = Float8GetDatum(eepath->fuzz_factor);
+					values[19] = CStringGetTextDatum(pathkeys_cmp_to_string(eepath->pathkeys_cmp));
+					values[20] = CStringGetTextDatum(bms_cmp_to_string(eepath->bms_cmp));
+					values[21] = CStringGetTextDatum(rows_cmp_to_string(eepath->rows_cmp));
+					values[22] = CStringGetTextDatum(parallel_safe_cmp_to_string(eepath->parallel_safe_cmp));
 				}
 				else 
 				{
@@ -348,6 +358,7 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 					nulls[19] = true;
 					nulls[20] = true;
 					nulls[21] = true;
+					nulls[22] = true;
 				}
 
 				/* Создание и вставка тапла */
