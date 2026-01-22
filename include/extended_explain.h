@@ -117,13 +117,15 @@ typedef struct EEPath
 	AddPathResult			add_path_result;	// Результат фильтрации на уровне функции add_path (SAVED, DISPLACED, REMOVED)
 	int64 					displaced_by;		// id пути, который вытеснил данный путь
 
-	/* Результаты сравнения при вытеснении */
-	PathCostComparison		cost_cmp;			
-	double					fuzz_factor;
-	PathKeysComparison		pathkeys_cmp;
-	BMS_Comparison			bms_cmp;
-	PathRowsComparison		rows_cmp;
-	PathParallelSafeComparison parallel_safe_cmp;
+	/* 
+	 * Результаты сравнения характеристик пути при вытеснении 
+	 */
+	PathCostComparison			cost_cmp;			
+	double						fuzz_factor;
+	PathKeysComparison			pathkeys_cmp;
+	BMS_Comparison				bms_cmp;
+	PathRowsComparison			rows_cmp;
+	PathParallelSafeComparison 	parallel_safe_cmp;
 
 }			EEPath;
 
@@ -182,7 +184,6 @@ typedef struct EERel
 	 * Определяет принадлежность путей к конкретному отношению.
 	 */
 	List	   *eepath_list;
-
 }			EERel;
 
 /*
@@ -255,12 +256,17 @@ typedef struct EEState
 	 * Определяет минимальный уровень текущего обрабатываемого
 	 * подзапроса.
 	 *
-	 * Для первого обрабатываемого подзапроса равен
-	 * единице. Для последующих подзапросов равен наибольшему уровню предыдущего подзапроса плюс
-	 * один.
+	 * Для первого обрабатываемого подзапроса равен единице. 
+	 * Для последующих подзапросов равен наибольшему уровню предыдущего подзапроса плюс один.
 	 */
 	int64		init_level;
 
+	/* 
+	 * Сохраненные RelOptInfo и EERel отношения, 
+	 * которые были обработаны функцией add_path() в последний раз
+	 * 
+	 * Позволяет не искать EERel по RelOptInfo повторно при обработке одного path_list.
+	 */
 	RelOptInfo	*cached_current_rel;
 	EERel		*cached_current_eerel;
 
@@ -308,16 +314,16 @@ extern void ee_process_upper_paths(PlannerInfo *root,
 								   RelOptInfo *output_rel,
 								   void *extra);
 
-extern EEState * create_ee_state(void);
+extern EEState *create_ee_state(void);
 
 extern int	get_subpath_num(Path *path);
 
-extern EEPath * create_eepath(Path *path, EERel *eerel);
-extern EEPath * search_eepath(Path *path);
-extern EEPath * record_eepath(EERel * eerel, Path *new_path);
+extern EEPath *create_eepath(Path *path, EERel *eerel);
+extern EEPath *search_eepath(Path *path);
+extern EEPath *record_eepath(EERel * eerel, Path *new_path);
 
-extern EERel * create_eerel(RelOptInfo *roi);
-extern EERel * search_eerel(RelOptInfo *roi);
+extern EERel *create_eerel(RelOptInfo *roi);
+extern EERel *search_eerel(RelOptInfo *roi);
 
 extern void init_eesubquery(void);
 

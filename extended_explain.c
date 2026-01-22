@@ -897,12 +897,12 @@ compare_path_costs_fuzzily(Path *path1, Path *path2, double fuzz_factor)
 	if (path1->startup_cost > path2->startup_cost * fuzz_factor)
 	{
 		/* ... but path1 fuzzily worse on startup, so path2 wins */
-		return TOTAL_EQUAL_STARTUP_BETTER2; /* STARTUP_COST_BETTER2 */
+		return TOTAL_EQUAL_STARTUP_BETTER2; 
 	}
 	if (path2->startup_cost > path1->startup_cost * fuzz_factor)
 	{
 		/* ... but path2 fuzzily worse on startup, so path1 wins */
-		return TOTAL_EQUAL_STARTUP_BETTER1; /* STARTUP_COST_BETTER2 */
+		return TOTAL_EQUAL_STARTUP_BETTER1; 
 	}
 	/* fuzzily the same on both costs */
 	return COSTS_EQUAL;
