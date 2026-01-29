@@ -230,7 +230,6 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 				 Path *new_path)
 {
 	bool		accept_new = true;	/* unless we find a superior old path */
-	int			insert_at = 0;	/* where to insert new item */
 	List	   *new_path_pathkeys;
 	ListCell   *p1;
 
@@ -240,12 +239,7 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 	MemoryContext old_ctx;
 
 	if (global_ee_state == NULL)
-	{
-		standard_add_path(parent_rel, new_path);
 		return;
-	}
-
-	CHECK_FOR_INTERRUPTS();
 
 	old_ctx = MemoryContextSwitchTo(ee_ctx);
 
@@ -420,41 +414,18 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 			mark_old_path_displaced(old_eepath, new_eepath, costcmp, fuzz_factor, keyscmp, outercmp, 
 								    compare_rows(new_path->rows, old_path->rows),
 								    compare_parallel_safe(new_path->parallel_safe, old_path->parallel_safe));
-
-			parent_rel->pathlist = foreach_delete_current(parent_rel->pathlist,
-														  p1);
-
-			if (!IsA(old_path, IndexPath))
-				pfree(old_path);
-		}
-		else
-		{
-			if (new_path->disabled_nodes > old_path->disabled_nodes ||
-				(new_path->disabled_nodes == old_path->disabled_nodes &&
-				 new_path->total_cost >= old_path->total_cost))
-				insert_at = foreach_current_index(p1) + 1;
 		}
 
 		if (!accept_new)
 			break;
 	}
 
-	if (accept_new)
-	{
-		/* Accept the new path: insert it at proper place in pathlist */
-		parent_rel->pathlist =
-			list_insert_nth(parent_rel->pathlist, insert_at, new_path);
-	}
-	else
+	if (!accept_new)
 	{
 		/*
 		 * Путь new_path не попал в pathlist.  Ставим соответствующую пометку APR_REMOVED в new_eepath
 		 */
 		mark_new_path_removed(new_eepath);
-
-		/* Reject and recycle the new path */
-		if (!IsA(new_path, IndexPath))
-			pfree(new_path);
 	}
 }
 
