@@ -66,8 +66,8 @@ static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
  *
  * Инициализируется каждый раз при вызове EXPLAIN.
  */
-EEState    		*global_ee_state = NULL;
-MemoryContext 	ee_ctx;
+static EEState    		*global_ee_state = NULL;
+static MemoryContext 	ee_ctx;
 
 static PathCostComparison	compare_path_costs_fuzzily(Path *path1, 
 													   Path *path2, 
@@ -238,195 +238,199 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 	EEPath 	   *old_eepath;
 	MemoryContext old_ctx;
 
-	if (global_ee_state == NULL)
-		return;
-
-	old_ctx = MemoryContextSwitchTo(ee_ctx);
-
-	if (global_ee_state->cached_current_rel == parent_rel)
+	if (global_ee_state != NULL)
 	{
-		/*
-		 * Нужное EERel отношение сохранилось в кэше.
-		 */
-		eerel = global_ee_state->cached_current_eerel;
-	}
-	else
-	{
-		/*
-		 * Нужного EERel отношения не оказалось в кэше, значит ищем его 
-		 * в списке отношений текущего подзапроса.
-		 */
-		eerel = search_eerel(parent_rel);
-		if (eerel == NULL)
+		old_ctx = MemoryContextSwitchTo(ee_ctx);
+
+		if (global_ee_state->cached_current_rel == parent_rel)
 		{
 			/*
-			 * Если отношение не было найдено, его необходимо создать 
-			 */
-			eerel = create_eerel(parent_rel);
+			* Нужное EERel отношение сохранилось в кэше.
+			*/
+			eerel = global_ee_state->cached_current_eerel;
+		}
+		else
+		{
+			/*
+			* Нужного EERel отношения не оказалось в кэше, значит ищем его 
+			* в списке отношений текущего подзапроса.
+			*/
+			eerel = search_eerel(parent_rel);
+			if (eerel == NULL)
+			{
+				/*
+				* Если отношение не было найдено, его необходимо создать 
+				*/
+				eerel = create_eerel(parent_rel);
+			}
+
+			/* Обновляем кэш */
+			global_ee_state->cached_current_rel = parent_rel;
+			global_ee_state->cached_current_eerel = eerel;
 		}
 
-		/* Обновляем кэш */
-		global_ee_state->cached_current_rel = parent_rel;
-		global_ee_state->cached_current_eerel = eerel;
-	}
+		/*
+		* Создаем eepath по new_path. 
+		* 
+		* По умолчанию путь считается сохраненным в pathlist (add_path_result = APR_SAVED), 
+		* однако в процессе работы функции add_path данное состояние может измениться.
+		*/
+		new_eepath = record_eepath(eerel, new_path);
 
-	/*
-	 * Создаем eepath по new_path. 
-	 * 
-	 * По умолчанию путь считается сохраненным в pathlist (add_path_result = APR_SAVED), 
-	 * однако в процессе работы функции add_path данное состояние может измениться.
-	 */
-	new_eepath = record_eepath(eerel, new_path);
+		MemoryContextSwitchTo(old_ctx);
 
-	MemoryContextSwitchTo(old_ctx);
+		new_path_pathkeys = new_path->param_info ? NIL : new_path->pathkeys;
 
-	new_path_pathkeys = new_path->param_info ? NIL : new_path->pathkeys;
-
-	foreach(p1, parent_rel->pathlist)
-	{
-		Path		*old_path = (Path *) lfirst(p1);
-		bool		remove_old = false; /* unless new proves superior */
-		double		fuzz_factor = STD_FUZZ_FACTOR;
-
-		PathCostComparison costcmp;
-		PathKeysComparison keyscmp;
-		BMS_Comparison outercmp;	
-
-		
-		costcmp = compare_path_costs_fuzzily(new_path, old_path,
-											 fuzz_factor);
-
-		if (costcmp != COSTS_DIFFERENT)
+		foreach(p1, parent_rel->pathlist)
 		{
-			List	   *old_path_pathkeys;
+			Path		*old_path = (Path *) lfirst(p1);
+			bool		remove_old = false; /* unless new proves superior */
+			double		fuzz_factor = STD_FUZZ_FACTOR;
 
-			old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
-			keyscmp = compare_pathkeys(new_path_pathkeys,
-									   old_path_pathkeys);
-			if (keyscmp != PATHKEYS_DIFFERENT)
+			PathCostComparison costcmp;
+			PathKeysComparison keyscmp;
+			BMS_Comparison outercmp;	
+
+			
+			costcmp = compare_path_costs_fuzzily(new_path, old_path,
+												fuzz_factor);
+
+			if (costcmp != COSTS_DIFFERENT)
 			{
-				switch (costcmp)
+				List	   *old_path_pathkeys;
+
+				old_path_pathkeys = old_path->param_info ? NIL : old_path->pathkeys;
+				keyscmp = compare_pathkeys(new_path_pathkeys,
+										old_path_pathkeys);
+				if (keyscmp != PATHKEYS_DIFFERENT)
 				{
-					case COSTS_EQUAL:
-						outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
-													  PATH_REQ_OUTER(old_path));
-						if (keyscmp == PATHKEYS_BETTER1)
-						{
-							if ((outercmp == BMS_EQUAL ||
-								 outercmp == BMS_SUBSET1) &&
-								new_path->rows <= old_path->rows &&
-								new_path->parallel_safe >= old_path->parallel_safe)
-								remove_old = true;	/* new dominates old */
-						}
-						else if (keyscmp == PATHKEYS_BETTER2)
-						{
-							if ((outercmp == BMS_EQUAL ||
-								 outercmp == BMS_SUBSET2) &&
-								new_path->rows >= old_path->rows &&
-								new_path->parallel_safe <= old_path->parallel_safe)
-								accept_new = false; /* old dominates new */
-						}
-						else	/* keyscmp == PATHKEYS_EQUAL */
-						{
-							if (outercmp == BMS_EQUAL)
+					switch (costcmp)
+					{
+						case COSTS_EQUAL:
+							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
+														PATH_REQ_OUTER(old_path));
+							if (keyscmp == PATHKEYS_BETTER1)
 							{
-								if (new_path->parallel_safe >
-									old_path->parallel_safe)
+								if ((outercmp == BMS_EQUAL ||
+									outercmp == BMS_SUBSET1) &&
+									new_path->rows <= old_path->rows &&
+									new_path->parallel_safe >= old_path->parallel_safe)
 									remove_old = true;	/* new dominates old */
-								else if (new_path->parallel_safe <
-										 old_path->parallel_safe)
-									accept_new = false; /* old dominates new */
-								else if (new_path->rows < old_path->rows)
-									remove_old = true;	/* new dominates old */
-								else if (new_path->rows > old_path->rows)
-									accept_new = false; /* old dominates new */
-								else
-								{
-									fuzz_factor = 1.0000000001;
-
-									costcmp = compare_path_costs_fuzzily(new_path,
-																		 old_path,
-																		 fuzz_factor);
-
-									if (costcmp == DISABLED_NODES_BETTER1 || 
-										costcmp == TOTAL_AND_STARTUP_BETTER1 || 
-										costcmp == TOTAL_EQUAL_STARTUP_BETTER1)
-										remove_old = true;	/* new dominates old */
-									else 
-										accept_new = false; /* old equals or dominates new */
-								}
 							}
-							else if (outercmp == BMS_SUBSET1 &&
-									 new_path->rows <= old_path->rows &&
-									 new_path->parallel_safe >= old_path->parallel_safe)
-								remove_old = true;	/* new dominates old */
-							else if (outercmp == BMS_SUBSET2 &&
-									 new_path->rows >= old_path->rows &&
-									 new_path->parallel_safe <= old_path->parallel_safe)
-								accept_new = false; /* old dominates new */
-							/* else different parameterizations, keep both */
-						}
-						break;
-					case DISABLED_NODES_BETTER1:
-					case TOTAL_AND_STARTUP_BETTER1:
-					case TOTAL_EQUAL_STARTUP_BETTER1:
-						if (keyscmp != PATHKEYS_BETTER2)
-						{
-							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
-														  PATH_REQ_OUTER(old_path));
-							if ((outercmp == BMS_EQUAL ||
-								 outercmp == BMS_SUBSET1) &&
-								new_path->rows <= old_path->rows &&
-								new_path->parallel_safe >= old_path->parallel_safe)
-								remove_old = true;	/* new dominates old */
-						}
-						break;
-					case DISABLED_NODES_BETTER2:
-					case TOTAL_AND_STARTUP_BETTER2:
-					case TOTAL_EQUAL_STARTUP_BETTER2:
-						if (keyscmp != PATHKEYS_BETTER1)
-						{
-							outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
-														  PATH_REQ_OUTER(old_path));
-							if ((outercmp == BMS_EQUAL ||
-								 outercmp == BMS_SUBSET2) &&
-								new_path->rows >= old_path->rows &&
-								new_path->parallel_safe <= old_path->parallel_safe)
-								accept_new = false; /* old dominates new */
-						}
-						break;
-					case COSTS_DIFFERENT:
-						break;
+							else if (keyscmp == PATHKEYS_BETTER2)
+							{
+								if ((outercmp == BMS_EQUAL ||
+									outercmp == BMS_SUBSET2) &&
+									new_path->rows >= old_path->rows &&
+									new_path->parallel_safe <= old_path->parallel_safe)
+									accept_new = false; /* old dominates new */
+							}
+							else	/* keyscmp == PATHKEYS_EQUAL */
+							{
+								if (outercmp == BMS_EQUAL)
+								{
+									if (new_path->parallel_safe >
+										old_path->parallel_safe)
+										remove_old = true;	/* new dominates old */
+									else if (new_path->parallel_safe <
+											old_path->parallel_safe)
+										accept_new = false; /* old dominates new */
+									else if (new_path->rows < old_path->rows)
+										remove_old = true;	/* new dominates old */
+									else if (new_path->rows > old_path->rows)
+										accept_new = false; /* old dominates new */
+									else
+									{
+										fuzz_factor = 1.0000000001;
+
+										costcmp = compare_path_costs_fuzzily(new_path,
+																			old_path,
+																			fuzz_factor);
+
+										if (costcmp == DISABLED_NODES_BETTER1 || 
+											costcmp == TOTAL_AND_STARTUP_BETTER1 || 
+											costcmp == TOTAL_EQUAL_STARTUP_BETTER1)
+											remove_old = true;	/* new dominates old */
+										else 
+											accept_new = false; /* old equals or dominates new */
+									}
+								}
+								else if (outercmp == BMS_SUBSET1 &&
+										new_path->rows <= old_path->rows &&
+										new_path->parallel_safe >= old_path->parallel_safe)
+									remove_old = true;	/* new dominates old */
+								else if (outercmp == BMS_SUBSET2 &&
+										new_path->rows >= old_path->rows &&
+										new_path->parallel_safe <= old_path->parallel_safe)
+									accept_new = false; /* old dominates new */
+								/* else different parameterizations, keep both */
+							}
+							break;
+						case DISABLED_NODES_BETTER1:
+						case TOTAL_AND_STARTUP_BETTER1:
+						case TOTAL_EQUAL_STARTUP_BETTER1:
+							if (keyscmp != PATHKEYS_BETTER2)
+							{
+								outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
+															PATH_REQ_OUTER(old_path));
+								if ((outercmp == BMS_EQUAL ||
+									outercmp == BMS_SUBSET1) &&
+									new_path->rows <= old_path->rows &&
+									new_path->parallel_safe >= old_path->parallel_safe)
+									remove_old = true;	/* new dominates old */
+							}
+							break;
+						case DISABLED_NODES_BETTER2:
+						case TOTAL_AND_STARTUP_BETTER2:
+						case TOTAL_EQUAL_STARTUP_BETTER2:
+							if (keyscmp != PATHKEYS_BETTER1)
+							{
+								outercmp = bms_subset_compare(PATH_REQ_OUTER(new_path),
+															PATH_REQ_OUTER(old_path));
+								if ((outercmp == BMS_EQUAL ||
+									outercmp == BMS_SUBSET2) &&
+									new_path->rows >= old_path->rows &&
+									new_path->parallel_safe <= old_path->parallel_safe)
+									accept_new = false; /* old dominates new */
+							}
+							break;
+						case COSTS_DIFFERENT:
+							break;
+					}
 				}
 			}
-		}
-
-		/*
-		 * Remove current element from pathlist if dominated by new.
-		 */
-		if (remove_old)
-		{
-			old_eepath = search_eepath(old_path);
 
 			/*
-			 * Добавляем в old_eepath информацию о вытеснении.
-			 */
-			mark_old_path_displaced(old_eepath, new_eepath, costcmp, fuzz_factor, keyscmp, outercmp, 
-								    compare_rows(new_path->rows, old_path->rows),
-								    compare_parallel_safe(new_path->parallel_safe, old_path->parallel_safe));
+			* Remove current element from pathlist if dominated by new.
+			*/
+			if (remove_old)
+			{
+				old_eepath = search_eepath(old_path);
+
+				/*
+				* Добавляем в old_eepath информацию о вытеснении.
+				*/
+				mark_old_path_displaced(old_eepath, new_eepath, costcmp, fuzz_factor, keyscmp, outercmp, 
+										compare_rows(new_path->rows, old_path->rows),
+										compare_parallel_safe(new_path->parallel_safe, old_path->parallel_safe));
+			}
+
+			if (!accept_new)
+				break;
 		}
 
 		if (!accept_new)
-			break;
+		{
+			/*
+			* Путь new_path не попал в pathlist.  Ставим соответствующую пометку APR_REMOVED в new_eepath
+			*/
+			mark_new_path_removed(new_eepath);
+		}
 	}
 
-	if (!accept_new)
-	{
-		/*
-		 * Путь new_path не попал в pathlist.  Ставим соответствующую пометку APR_REMOVED в new_eepath
-		 */
-		mark_new_path_removed(new_eepath);
-	}
+	/* Pass call to previous hook. */
+	if (prev_add_path_hook)
+		(*prev_add_path_hook) (parent_rel, new_path);
 }
 
 /*
@@ -438,7 +442,6 @@ ee_explain(Query *query, int cursorOptions,
 		   const char *queryString, ParamListInfo params,
 		   QueryEnvironment *queryEnv)
 {
-
 	if (get_add_paths_setting(es))
 	{
 		int64		query_id;
@@ -465,7 +468,7 @@ ee_explain(Query *query, int cursorOptions,
 	else
 	{
 		standard_ExplainOneQuery(query, cursorOptions, into, es,
-								 queryString, params, queryEnv);
+								queryString, params, queryEnv);
 	}
 }
 
@@ -487,22 +490,26 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 	MemoryContext old_ctx;
 	EERel	   *eerel;
 
-	if (global_ee_state == NULL)
-		return;
+	if (global_ee_state != NULL)
+	{
+		old_ctx = MemoryContextSwitchTo(ee_ctx);
 
-	old_ctx = MemoryContextSwitchTo(ee_ctx);
+		if (global_ee_state->cached_current_rel == rel)
+			eerel = global_ee_state->cached_current_eerel; 
+		else
+			eerel = search_eerel(rel);
 
-	if (global_ee_state->cached_current_rel == rel)
-		eerel = global_ee_state->cached_current_eerel; 
-	else
-		eerel = search_eerel(rel);
+		eerel->name = get_rel_name(rte->relid);
 
-	eerel->name = get_rel_name(rte->relid);
+		if (rte->alias != NULL)
+			eerel->alias = pstrdup(rte->alias->aliasname);
 
-	if (rte->alias != NULL)
-		eerel->alias = pstrdup(rte->alias->aliasname);
+		MemoryContextSwitchTo(old_ctx);
+	}
 
-	MemoryContextSwitchTo(old_ctx);
+	/* Pass call to previous hook. */
+	if (prev_set_rel_pathlist_hook)
+		(*prev_set_rel_pathlist_hook) (root, rel, rti, rte);
 }
 
 /*
@@ -516,17 +523,18 @@ ee_process_upper_paths(PlannerInfo *root,
 					   void *extra)
 {
 
-	if (global_ee_state == NULL)
-		return;
-
-	if (stage == UPPERREL_FINAL)
+	if (global_ee_state != NULL && stage == UPPERREL_FINAL)
 	{
 		/* Указываем query_level для текущего eesubquery */
 		global_ee_state->current_eesubquery->subquery_level = root->query_level;
 
 		/* Инициализируем следующий eesubquery */
 		init_eesubquery();
-	}	
+	}
+
+	/* Pass call to previous hook. */
+	if (prev_create_upper_paths_hook)
+		(*prev_create_upper_paths_hook) (root, stage, input_rel, output_rel, extra);
 }
 
 /* ----------------------------------------------------------------
