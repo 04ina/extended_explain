@@ -2,11 +2,19 @@
 -- Подготовка
 --
 CREATE EXTENSION extended_explain;
+SET debug_parallel_query = off;
+SET jit = off;
 CREATE TABLE test_table(col integer); 
+CREATE TABLE t1 (a int);
+CREATE TABLE t2 (b int);
+CREATE TABLE t3 (c int);
 INSERT INTO test_table SELECT generate_series(1,1000);
-ANALYZE test_table;
+INSERT INTO t1 SELECT generate_series(1, 100);
+INSERT INTO t2 SELECT generate_series(1, 200);
+INSERT INTO t3 SELECT generate_series(1, 50);
+ANALYZE test_table, t1, t2, t3;
 --
--- Проверка параметра get_paths  
+-- 1. Проверка параметра get_paths  
 --
 EXPLAIN
 SELECT * FROM test_table;
@@ -16,11 +24,14 @@ SELECT * FROM test_table;
 (1 row)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+----------+----------------
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
+FROM ee.paths
+ORDER BY path_id;
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width | rel_name | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+----------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
 (0 rows)
 
 EXPLAIN (get_paths)
@@ -31,20 +42,39 @@ SELECT * FROM test_table;
 (1 row)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows |  rel_name  | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+------------+----------------
-        1 |               |           1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 | test_table |              1
-        1 |               |           1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 |            |              0
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
+FROM ee.paths
+ORDER BY path_id;
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width |  rel_name  | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+------------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        1 |           1 |              1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 |     4 | test_table |           |          |     1 | saved           |              |          |             |              |          | 
+        1 |           1 |              1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 |     0 |            |           |          |     0 | saved           |              |          |             |              |          | 
 (2 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
+
+SELECT 
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
+FROM ee.paths
+ORDER BY path_id;
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width | rel_name | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+----------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+(0 rows)
+
 --
--- Проверка простейших случаев
+-- 2. SeqScan
 --
--- SeqScan
 EXPLAIN (get_paths)
 SELECT * FROM test_table;
                           QUERY PLAN                          
@@ -53,40 +83,63 @@ SELECT * FROM test_table;
 (1 row)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows |  rel_name  | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+------------+----------------
-        2 |               |           1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 | test_table |              1
-        2 |               |           1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 |            |              0
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
+FROM ee.paths
+ORDER BY path_id;
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width |  rel_name  | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+------------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        2 |           1 |              1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 |     4 | test_table |           |          |     1 | saved           |              |          |             |              |          | 
+        2 |           1 |              1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 |     0 |            |           |          |     0 | saved           |              |          |             |              |          | 
 (2 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
--- IndexOnlyScan
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
+
+-- 
+-- 3. IndexOnlyScan
+--
 CREATE INDEX ON test_table(col);
 EXPLAIN (get_paths)
-SELECT * FROM test_table;
-                          QUERY PLAN                          
---------------------------------------------------------------
- Seq Scan on test_table  (cost=0.00..15.00 rows=1000 width=4)
-(1 row)
+SELECT * FROM test_table WHERE col = 3;
+                                        QUERY PLAN                                        
+------------------------------------------------------------------------------------------
+ Index Only Scan using test_table_col_idx on test_table  (cost=0.28..8.29 rows=1 width=4)
+   Index Cond: (col = 3)
+(2 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths;
- query_id | subquery_type | subquery_id | rel_id | path_id |   path_type    | child_paths | startup_cost | total_cost | rows |  rel_name  | joined_rel_num 
-----------+---------------+-------------+--------+---------+----------------+-------------+--------------+------------+------+------------+----------------
-        3 |               |           1 |      1 |       1 | SeqScan        |             |            0 |         15 | 1000 | test_table |              1
-        3 |               |           1 |      1 |       2 | IndexOnlyScan  |             |        0.275 |     43.275 | 1000 | test_table |              1
-        3 |               |           1 |      1 |       3 | BitmapHeapScan |             |       25.525 |     40.525 | 1000 | test_table |              1
-        3 |               |           1 |      2 |       4 | SeqScan        |             |            0 |         15 | 1000 |            |              0
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
+FROM ee.paths
+ORDER BY path_id;
+ query_id | subquery_id | subquery_level | rel_id | path_id |   path_type    | child_paths |   startup_cost    |    total_cost     | rows | width |  rel_name  | rel_alias | level | add_path_result | displaced_by |        cost_cmp         | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+----------------+-------------+-------------------+-------------------+------+-------+------------+-----------+-------+-----------------+--------------+-------------------------+-------------+--------------+----------+-------------------
+        3 |           1 |              1 |      1 |       1 | SeqScan        |             |                 0 |              17.5 |    1 |     4 | test_table |           |     1 | displaced       |            2 | total and startup worse |        1.01 | equal        | equal    | equal
+        3 |           1 |              1 |      1 |       2 | IndexOnlyScan  |             |             0.275 |            8.2925 |    1 |     4 | test_table |           |     1 | saved           |              |                         |             |              |          | 
+        3 |           1 |              1 |      1 |       3 | BitmapHeapScan |             | 4.282750000000001 | 8.295250000000001 |    1 |     4 | test_table |           |     1 | removed         |              |                         |             |              |          | 
+        3 |           1 |              1 |      2 |       4 | IndexOnlyScan  |             |             0.275 |            8.2925 |    1 |     0 |            |           |     0 | saved           |              |                         |             |              |          | 
 (4 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
+
 DROP INDEX test_table_col_idx;
--- CteScan, проверка связи между запросом и подзапросом 
+--
+-- 4. CteScan
+--
 EXPLAIN (get_paths)
 WITH cte AS MATERIALIZED
 (
@@ -101,30 +154,29 @@ SELECT * FROM cte;
 (3 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows |  rel_name  | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+------------+----------------
-        4 |               |           1 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 | test_table |              1
-        4 |               |           1 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 |            |              0
-        4 |               |           2 |      3 |       3 | CteScan   |             |            0 |         20 | 1000 | cte        |              1
-        4 |               |           2 |      4 |       4 | CteScan   |             |            0 |         20 | 1000 |            |              0
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
+FROM ee.paths
+ORDER BY path_id;
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width |  rel_name  | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+------------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        4 |           1 |              2 |      1 |       1 | SeqScan   |             |            0 |         15 | 1000 |     4 | test_table |           |          |     1 | saved           |              |          |             |              |          | 
+        4 |           1 |              2 |      2 |       2 | SeqScan   |             |            0 |         15 | 1000 |     0 |            |           |          |     0 | saved           |              |          |             |              |          | 
+        4 |           2 |              1 |      3 |       3 | CteScan   |             |            0 |         20 | 1000 |     4 |            |           |          |     1 | saved           |              |          |             |              |          | 
+        4 |           2 |              1 |      4 |       4 | CteScan   |             |            0 |         20 | 1000 |     0 |            |           |          |     0 | saved           |              |          |             |              |          | 
 (4 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
+
 --
--- Подготовка таблиц для тестирования соединений и других операторов
---
-CREATE TABLE t1 (a int);
-CREATE TABLE t2 (b int);
-CREATE TABLE t3 (c int);
-INSERT INTO t1 SELECT generate_series(1, 100);
-INSERT INTO t2 SELECT generate_series(1, 200);
-INSERT INTO t3 SELECT generate_series(1, 50);
-ANALYZE t1, t2, t3;
---
--- 1. HashJoin (без индексов → SeqScan + HashJoin)
+-- 5. HashJoin
 --
 EXPLAIN (get_paths)
 SELECT * FROM t1 JOIN t2 ON t1.a = t2.b;
@@ -138,103 +190,31 @@ SELECT * FROM t1 JOIN t2 ON t1.a = t2.b;
 (5 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
 FROM ee.paths
 ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths |    startup_cost    |     total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------------+--------------------+------+----------+----------------
-        5 |               |           1 |      1 |       1 | SeqScan   |             |                  0 |                  2 |  100 | t1       |              1
-        5 |               |           1 |      2 |       2 | SeqScan   |             |                  0 |                  3 |  200 | t2       |              1
-        5 |               |           1 |      3 |       3 | MergeJoin | {1,2}       | 15.965784284662092 | 17.965784284662092 |  100 |          |              2
-        5 |               |           1 |      3 |       4 | HashJoin  | {1,2}       |                5.5 |              8.875 |  100 |          |              2
-        5 |               |           1 |      3 |       5 | HashJoin  | {2,1}       |               3.25 |                  8 |  100 |          |              2
-        5 |               |           1 |      4 |       6 | HashJoin  | {2,1}       |               3.25 |                  8 |  100 |          |              0
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths |    startup_cost    |     total_cost     | rows | width | rel_name | rel_alias | indexoid | level | add_path_result | displaced_by |        cost_cmp         | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------------+--------------------+------+-------+----------+-----------+----------+-------+-----------------+--------------+-------------------------+-------------+--------------+----------+-------------------
+        5 |           1 |              1 |      1 |       1 | SeqScan   |             |                  0 |                  2 |  100 |     4 | t1       |           |          |     1 | saved           |              |                         |             |              |          | 
+        5 |           1 |              1 |      2 |       2 | SeqScan   |             |                  0 |                  3 |  200 |     4 | t2       |           |          |     1 | saved           |              |                         |             |              |          | 
+        5 |           1 |              1 |      3 |       3 | MergeJoin | {1,2}       | 15.965784284662092 | 17.965784284662092 |  100 |     8 |          |           |          |     2 | displaced       |            4 | total and startup worse |        1.01 | equal        | equal    | equal
+        5 |           1 |              1 |      3 |       4 | HashJoin  | {1,2}       |                5.5 |              8.875 |  100 |     8 |          |           |          |     2 | displaced       |            5 | total and startup worse |        1.01 | equal        | equal    | equal
+        5 |           1 |              1 |      3 |       5 | HashJoin  | {2,1}       |               3.25 |                  8 |  100 |     8 |          |           |          |     2 | saved           |              |                         |             |              |          | 
+        5 |           1 |              1 |      4 |       6 | HashJoin  | {2,1}       |               3.25 |                  8 |  100 |     0 |          |           |          |     0 | saved           |              |                         |             |              |          | 
 (6 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
---
--- 2. MergeJoin (требует сортировки или индексов)
---
-CREATE INDEX ON t1(a);
-CREATE INDEX ON t2(b);
-EXPLAIN (get_paths)
-SELECT * FROM t1 JOIN t2 ON t1.a = t2.b;
-                           QUERY PLAN                           
-----------------------------------------------------------------
- Hash Join  (cost=3.25..8.00 rows=100 width=8)
-   Hash Cond: (t2.b = t1.a)
-   ->  Seq Scan on t2  (cost=0.00..3.00 rows=200 width=4)
-   ->  Hash  (cost=2.00..2.00 rows=100 width=4)
-         ->  Seq Scan on t1  (cost=0.00..2.00 rows=100 width=4)
-(5 rows)
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
 
-SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths
-ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id |   path_type    | child_paths |    startup_cost     |     total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+----------------+-------------+---------------------+--------------------+------+----------+----------------
-        6 |               |           1 |      1 |       1 | SeqScan        |             |                   0 |                  2 |  100 | t1       |              1
-        6 |               |           1 |      1 |       2 | IndexOnlyScan  |             | 0.14250000000000002 |            13.6425 |  100 | t1       |              1
-        6 |               |           1 |      1 |       3 | IndexOnlyScan  |             | 0.14250000000000002 |               0.22 |    1 | t1       |              1
-        6 |               |           1 |      1 |       4 | BitmapHeapScan |             |             0.19025 |            4.20275 |    1 | t1       |              1
-        6 |               |           1 |      2 |       5 | SeqScan        |             |                   0 |                  3 |  200 | t2       |              1
-        6 |               |           1 |      2 |       6 | IndexOnlyScan  |             |               0.145 |             15.145 |  200 | t2       |              1
-        6 |               |           1 |      2 |       7 | IndexOnlyScan  |             |               0.145 |             0.2825 |    1 | t2       |              1
-        6 |               |           1 |      2 |       8 | BitmapHeapScan |             | 0.23274999999999998 |            4.24525 |    1 | t2       |              1
-        6 |               |           1 |      3 |       9 | MergeJoin      | {1,5}       |  15.965784284662092 | 17.965784284662092 |  100 |          |              2
-        6 |               |           1 |      3 |      10 | HashJoin       | {1,5}       |                 5.5 |              8.875 |  100 |          |              2
-        6 |               |           1 |      3 |      11 | HashJoin       | {5,1}       |                3.25 |                  8 |  100 |          |              2
-        6 |               |           1 |      4 |      12 | HashJoin       | {5,1}       |                3.25 |                  8 |  100 |          |              0
-(12 rows)
-
-TRUNCATE TABLE ee.paths, ee.query;
-DROP INDEX t1_a_idx, t2_b_idx;
 --
--- 3. Nested Loop Join (маленькие таблицы)
---
-DELETE FROM t1 WHERE a > 10;
-DELETE FROM t2 WHERE b > 10;
-ANALYZE t1, t2;
-EXPLAIN (get_paths)
-SELECT * FROM t1 JOIN t2 ON t1.a = t2.b;
-                          QUERY PLAN                           
----------------------------------------------------------------
- Hash Join  (cost=1.23..2.46 rows=10 width=8)
-   Hash Cond: (t1.a = t2.b)
-   ->  Seq Scan on t1  (cost=0.00..1.10 rows=10 width=4)
-   ->  Hash  (cost=1.10..1.10 rows=10 width=4)
-         ->  Seq Scan on t2  (cost=0.00..1.10 rows=10 width=4)
-(5 rows)
-
-SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths
-ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths |    startup_cost    |     total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------------+--------------------+------+----------+----------------
-        7 |               |           1 |      1 |       1 | SeqScan   |             |                  0 |                1.1 |   10 | t1       |              1
-        7 |               |           1 |      2 |       2 | SeqScan   |             |                  0 |                1.1 |   10 | t2       |              1
-        7 |               |           1 |      3 |       3 | MergeJoin | {1,2}       | 2.5321928094887367 | 2.7321928094887364 |   10 |          |              2
-        7 |               |           1 |      3 |       4 | NestLoop  | {1,5}       |                  0 |              3.725 |   10 |          |              2
-        7 |               |           1 |      2 |       5 | Material  | {2}         |                  0 | 1.1500000000000001 |   10 | t2       |              1
-        7 |               |           1 |      3 |       6 | HashJoin  | {1,2}       |              1.225 | 2.4625000000000004 |   10 |          |              2
-        7 |               |           1 |      3 |       7 | NestLoop  | {2,8}       |                  0 |              3.725 |   10 |          |              2
-        7 |               |           1 |      1 |       8 | Material  | {1}         |                  0 | 1.1500000000000001 |   10 | t1       |              1
-        7 |               |           1 |      3 |       9 | HashJoin  | {2,1}       |              1.225 | 2.4625000000000004 |   10 |          |              2
-        7 |               |           1 |      4 |      10 | HashJoin  | {1,2}       |              1.225 | 2.4625000000000004 |   10 |          |              0
-(10 rows)
-
-TRUNCATE TABLE ee.paths, ee.query;
--- Восстановление данных
-INSERT INTO t1 SELECT generate_series(11, 100);
-INSERT INTO t2 SELECT generate_series(11, 200);
-ANALYZE t1, t2;
---
--- 4. Агрегаты (Agg)
+-- 6. Агрегаты (Agg)
 --
 EXPLAIN (get_paths)
 SELECT COUNT(*) FROM t1;
@@ -245,20 +225,28 @@ SELECT COUNT(*) FROM t1;
 (2 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
 FROM ee.paths
 ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+----------+----------------
-        8 |               |           1 |      1 |       1 | SeqScan   |             |            0 |          2 |  100 | t1       |              1
-        8 |               |           1 |      2 |       2 | Agg       | {1}         |         2.25 |       2.26 |    1 |          |              0
-        8 |               |           1 |      3 |       3 | Agg       | {1}         |         2.25 |       2.26 |    1 |          |              0
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width | rel_name | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+----------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        6 |           1 |              1 |      1 |       1 | SeqScan   |             |            0 |          2 |  100 |     0 | t1       |           |          |     1 | saved           |              |          |             |              |          | 
+        6 |           1 |              1 |      2 |       2 | Agg       | {1}         |         2.25 |       2.26 |    1 |     8 |          |           |          |     0 | saved           |              |          |             |              |          | 
+        6 |           1 |              1 |      3 |       3 | Agg       | {1}         |         2.25 |       2.26 |    1 |     0 |          |           |          |     0 | saved           |              |          |             |              |          | 
 (3 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
+
 --
--- 5. Сортировка (Sort)
+-- 7. Сортировка (Sort)
 --
 EXPLAIN (get_paths)
 SELECT * FROM t1 ORDER BY a;
@@ -270,20 +258,28 @@ SELECT * FROM t1 ORDER BY a;
 (3 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
 FROM ee.paths
 ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths |   startup_cost    |    total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+-------------------+-------------------+------+----------+----------------
-        9 |               |           1 |      1 |       1 | SeqScan   |             |                 0 |                 2 |  100 | t1       |              1
-        9 |               |           1 |      2 |       2 | Sort      | {1}         | 5.321928094887364 | 5.571928094887364 |  100 |          |              0
-        9 |               |           1 |      3 |       3 | Sort      | {1}         | 5.321928094887364 | 5.571928094887364 |  100 |          |              0
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths |   startup_cost    |    total_cost     | rows | width | rel_name | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+-------------------+-------------------+------+-------+----------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        7 |           1 |              1 |      1 |       1 | SeqScan   |             |                 0 |                 2 |  100 |     4 | t1       |           |          |     1 | saved           |              |          |             |              |          | 
+        7 |           1 |              1 |      2 |       2 | Sort      | {1}         | 5.321928094887364 | 5.571928094887364 |  100 |     0 |          |           |          |     0 | saved           |              |          |             |              |          | 
+        7 |           1 |              1 |      3 |       3 | Sort      | {1}         | 5.321928094887364 | 5.571928094887364 |  100 |     0 |          |           |          |     0 | saved           |              |          |             |              |          | 
 (3 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
+
 --
--- 6. LIMIT (Result, Limit)
+-- 8. LIMIT
 --
 EXPLAIN (get_paths)
 SELECT * FROM t1 LIMIT 5;
@@ -294,54 +290,27 @@ SELECT * FROM t1 LIMIT 5;
 (2 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
 FROM ee.paths
 ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+------------+------+----------+----------------
-       10 |               |           1 |      1 |       1 | SeqScan   |             |            0 |          2 |  100 | t1       |              1
-       10 |               |           1 |      2 |       2 | Limit     | {1}         |            0 |        0.1 |    5 |          |              0
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost | total_cost | rows | width | rel_name | rel_alias | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+------------+------+-------+----------+-----------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        8 |           1 |              1 |      1 |       1 | SeqScan   |             |            0 |          2 |  100 |     4 | t1       |           |          |     1 | saved           |              |          |             |              |          | 
+        8 |           1 |              1 |      2 |       2 | Limit     | {1}         |            0 |        0.1 |    5 |     0 |          |           |          |     0 | saved           |              |          |             |              |          | 
 (2 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
---
--- 7. Подзапросы (SubqueryScan / InitPlan)
---
-EXPLAIN (get_paths)
-SELECT * FROM t1 WHERE a IN (SELECT b FROM t2 WHERE b < 10);
-                          QUERY PLAN                          
---------------------------------------------------------------
- Hash Semi Join  (cost=4.61..6.92 rows=4 width=4)
-   Hash Cond: (t1.a = t2.b)
-   ->  Seq Scan on t1  (cost=0.00..2.00 rows=100 width=4)
-   ->  Hash  (cost=4.50..4.50 rows=9 width=4)
-         ->  Seq Scan on t2  (cost=0.00..4.50 rows=9 width=4)
-               Filter: (b < 10)
-(6 rows)
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
 
-SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths
-ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths |   startup_cost    |     total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+-------------------+--------------------+------+----------+----------------
-       11 |               |           1 |      1 |       1 | SeqScan   |             |                 0 |                  2 |  100 | t1       |              1
-       11 |               |           1 |      2 |       2 | SeqScan   |             |                 0 |                4.5 |    9 | t2       |              1
-       11 |               |           1 |      3 |       3 | MergeJoin | {1,2}       | 9.964574719952267 | 10.524574719952268 |    4 |          |              2
-       11 |               |           1 |      3 |       4 | NestLoop  | {1,2}       |                 0 |             463.25 |    4 |          |              2
-       11 |               |           1 |      3 |       5 | NestLoop  | {1,6}       |                 0 |            20.0225 |    4 |          |              2
-       11 |               |           1 |      2 |       6 | Material  | {2}         |                 0 |              4.545 |    9 | t2       |              1
-       11 |               |           1 |      3 |       7 | HashJoin  | {1,2}       |            4.6125 |  6.919499999999999 |    4 |          |              2
-       11 |               |           1 |      3 |       8 | HashJoin  | {1,9}       |             4.725 |              7.032 |    4 |          |              2
-       11 |               |           1 |      2 |       9 | Unique    | {2}         |            4.5225 |             4.6125 |    9 | t2       |              1
-       11 |               |           1 |      4 |      10 | HashJoin  | {1,2}       |            4.6125 |  6.919499999999999 |    4 |          |              0
-(10 rows)
-
-TRUNCATE TABLE ee.paths, ee.query;
 --
--- 8. Материализация через UNION (Materialize)
+-- 9. Append
 --
 EXPLAIN (get_paths)
 WITH cte AS NOT MATERIALIZED
@@ -359,126 +328,30 @@ SELECT * FROM cte;
 (3 rows)
 
 SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
+	query_id, subquery_id, subquery_level, rel_id, path_id, path_type, child_paths,
+	startup_cost, total_cost, rows, width, rel_name, rel_alias, indexoid, level,  
+	add_path_result, displaced_by, cost_cmp, fuzz_factor, pathkeys_cmp, bms_cmp
+	rows_cmp, parallel_safe_cmp
 FROM ee.paths
 ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths | startup_cost |     total_cost     | rows |  rel_name  | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------+--------------------+------+------------+----------------
-       12 |               |           1 |      1 |       1 | SeqScan   |             |            0 |                  2 |  100 | t1         |              1
-       12 |               |           1 |      2 |       2 | SeqScan   |             |            0 |                  2 |  100 | t1         |              1
-       12 |               |           1 |      3 |       3 | Append    |             |            0 |                  5 |  200 | *SELECT* 1 |              1
-       12 |               |           1 |      3 |       4 | Gather    | {5}         |         1000 | 1023.5964705882353 |  200 | *SELECT* 1 |              1
-       12 |               |           1 |      3 |       5 | Append    |             |            0 | 3.5964705882352943 |   84 | *SELECT* 1 |              1
-       12 |               |           1 |      4 |       6 | Append    |             |            0 |                  5 |  200 |            |              0
+ query_id | subquery_id | subquery_level | rel_id | path_id | path_type | child_paths | startup_cost |     total_cost     | rows | width | rel_name | rel_alias  | indexoid | level | add_path_result | displaced_by | cost_cmp | fuzz_factor | pathkeys_cmp | rows_cmp | parallel_safe_cmp 
+----------+-------------+----------------+--------+---------+-----------+-------------+--------------+--------------------+------+-------+----------+------------+----------+-------+-----------------+--------------+----------+-------------+--------------+----------+-------------------
+        9 |           1 |              1 |      1 |       1 | SeqScan   |             |            0 |                  2 |  100 |     4 | t1       |            |          |     1 | saved           |              |          |             |              |          | 
+        9 |           1 |              1 |      2 |       2 | SeqScan   |             |            0 |                  2 |  100 |     4 | t1       |            |          |     1 | saved           |              |          |             |              |          | 
+        9 |           1 |              1 |      3 |       3 | Append    |             |            0 |                  5 |  200 |     4 |          | *SELECT* 1 |          |     1 | saved           |              |          |             |              |          | 
+        9 |           1 |              1 |      3 |       4 | Gather    | {5}         |         1000 | 1023.5964705882353 |  200 |     4 |          | *SELECT* 1 |          |     1 | removed         |              |          |             |              |          | 
+        9 |           1 |              1 |      3 |       5 | Append    |             |            0 | 3.5964705882352943 |   84 |     4 |          | *SELECT* 1 |          |     1 | saved           |              |          |             |              |          | 
+        9 |           1 |              1 |      4 |       6 | Append    |             |            0 |                  5 |  200 |     0 |          |            |          |     0 | saved           |              |          |             |              |          | 
 (6 rows)
 
-TRUNCATE TABLE ee.paths, ee.query;
---
--- 9. Трёхтабличное соединение (проверка многоуровневых joined_rel)
---
-EXPLAIN (get_paths)
-SELECT * FROM t1 JOIN t2 ON t1.a = t2.b JOIN t3 ON t2.b = t3.c;
-                                QUERY PLAN                                 
----------------------------------------------------------------------------
- Hash Join  (cost=8.00..10.62 rows=50 width=12)
-   Hash Cond: (t1.a = t2.b)
-   ->  Seq Scan on t1  (cost=0.00..2.00 rows=100 width=4)
-   ->  Hash  (cost=7.38..7.38 rows=50 width=8)
-         ->  Hash Join  (cost=2.12..7.38 rows=50 width=8)
-               Hash Cond: (t2.b = t3.c)
-               ->  Seq Scan on t2  (cost=0.00..4.00 rows=200 width=4)
-               ->  Hash  (cost=1.50..1.50 rows=50 width=4)
-                     ->  Seq Scan on t3  (cost=0.00..1.50 rows=50 width=4)
-(9 rows)
+SELECT ee.clear();
+NOTICE:  truncate cascades to table "paths"
+ clear 
+-------
+ t
+(1 row)
 
-SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths
-ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id | path_type | child_paths |    startup_cost    |     total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+-----------+-------------+--------------------+--------------------+------+----------+----------------
-       13 |               |           1 |      1 |       1 | SeqScan   |             |                  0 |                  2 |  100 | t1       |              1
-       13 |               |           1 |      2 |       2 | SeqScan   |             |                  0 |                  4 |  200 | t2       |              1
-       13 |               |           1 |      3 |       3 | SeqScan   |             |                  0 |                1.5 |   50 | t3       |              1
-       13 |               |           1 |      4 |       4 | MergeJoin | {1,2}       | 16.965784284662092 | 18.965784284662092 |  100 |          |              2
-       13 |               |           1 |      4 |       5 | HashJoin  | {1,2}       |                6.5 |              9.875 |  100 |          |              2
-       13 |               |           1 |      4 |       6 | MergeJoin | {2,1}       | 16.965784284662092 | 18.965784284662092 |  100 |          |              2
-       13 |               |           1 |      4 |       7 | HashJoin  | {2,1}       |               3.25 |                  9 |  100 |          |              2
-       13 |               |           1 |      5 |       8 | MergeJoin | {1,3}       |  8.232892142331046 |  9.227892142331045 |   50 |          |              2
-       13 |               |           1 |      5 |       9 | HashJoin  | {1,3}       |              2.125 |                  5 |   50 |          |              2
-       13 |               |           1 |      5 |      10 | MergeJoin | {3,1}       |  8.232892142331046 |  9.227892142331045 |   50 |          |              2
-       13 |               |           1 |      5 |      11 | HashJoin  | {3,1}       |               3.25 |             5.4375 |   50 |          |              2
-       13 |               |           1 |      6 |      12 | MergeJoin | {2,3}       | 14.554820237218408 | 15.554820237218408 |   50 |          |              2
-       13 |               |           1 |      6 |      13 | HashJoin  | {2,3}       |              2.125 |              7.375 |   50 |          |              2
-       13 |               |           1 |      6 |      14 | MergeJoin | {3,2}       | 14.554820237218408 | 15.554820237218408 |   50 |          |              2
-       13 |               |           1 |      7 |      15 | MergeJoin | {6,3}       | 15.232892142331046 | 16.227892142331047 |   50 |          |              3
-       13 |               |           1 |      7 |      16 | HashJoin  | {6,3}       |              5.375 |                 12 |   50 |          |              3
-       13 |               |           1 |      7 |      17 | HashJoin  | {3,6}       |              10.25 |            12.4375 |   50 |          |              3
-       13 |               |           1 |      7 |      18 | HashJoin  | {9,2}       |              8.625 |            12.1875 |   50 |          |              3
-       13 |               |           1 |      7 |      19 | HashJoin  | {2,9}       |              5.625 |             10.875 |   50 |          |              3
-       13 |               |           1 |      7 |      20 | HashJoin  | {13,1}      |              5.375 |            11.0625 |   50 |          |              3
-       13 |               |           1 |      7 |      21 | HashJoin  | {1,13}      |                  8 |             10.625 |   50 |          |              3
-       13 |               |           1 |      8 |      22 | HashJoin  | {1,13}      |                  8 |             10.625 |   50 |          |              0
-(22 rows)
-
-TRUNCATE TABLE ee.paths, ee.query;
---
--- 10. Рекурсивный CTE (RecursiveUnion, WorkTableScan)
---
-CREATE TABLE graph (id int, parent int);
-INSERT INTO graph VALUES (1, NULL), (2, 1), (3, 2), (4, 3);
-ANALYZE graph;
-EXPLAIN (get_paths)
-WITH RECURSIVE r AS (
-    SELECT id, parent FROM graph WHERE parent IS NULL
-    UNION ALL
-    SELECT g.id, g.parent FROM graph g JOIN r ON g.parent = r.id
-)
-SELECT * FROM r;
-                                   QUERY PLAN                                    
----------------------------------------------------------------------------------
- CTE Scan on r  (cost=14.93..15.55 rows=31 width=8)
-   CTE r
-     ->  Recursive Union  (cost=0.00..14.93 rows=31 width=8)
-           ->  Seq Scan on graph  (cost=0.00..1.04 rows=1 width=8)
-                 Filter: (parent IS NULL)
-           ->  Hash Join  (cost=1.09..1.36 rows=3 width=8)
-                 Hash Cond: (r_1.id = g.parent)
-                 ->  WorkTable Scan on r r_1  (cost=0.00..0.20 rows=10 width=4)
-                 ->  Hash  (cost=1.04..1.04 rows=4 width=8)
-                       ->  Seq Scan on graph g  (cost=0.00..1.04 rows=4 width=8)
-(10 rows)
-
-SELECT 
-	query_id, subquery_type, subquery_id, rel_id, path_id, path_type, child_paths,
-	startup_cost, total_cost, rows, rel_name, joined_rel_num
-FROM ee.paths
-ORDER BY path_id;
- query_id | subquery_type | subquery_id | rel_id | path_id |  path_type   | child_paths |    startup_cost    |     total_cost     | rows | rel_name | joined_rel_num 
-----------+---------------+-------------+--------+---------+--------------+-------------+--------------------+--------------------+------+----------+----------------
-       14 |               |           1 |      1 |       1 | SeqScan      |             |                  0 |               1.04 |    1 | graph    |              1
-       14 |               |           1 |      2 |       2 | SeqScan      |             |                  0 |               1.04 |    1 |          |              0
-       14 |               |           2 |      3 |       3 | SubqueryScan | {1}         |                  0 |               1.04 |    1 |          |              1
-       14 |               |           2 |      4 |       4 | Unknown      |             |                  0 |                0.2 |   10 | r        |              1
-       14 |               |           2 |      5 |       5 | SeqScan      |             |                  0 |               1.04 |    4 | g        |              1
-       14 |               |           2 |      6 |       6 | MergeJoin    | {5,4}       | 1.4460964047443683 | 1.5460964047443684 |    3 |          |              2
-       14 |               |           2 |      6 |       7 | NestLoop     | {5,4}       |                  0 |               2.04 |    3 |          |              2
-       14 |               |           2 |      6 |       8 | HashJoin     | {5,4}       |              0.325 |               1.41 |    3 |          |              2
-       14 |               |           2 |      6 |       9 | NestLoop     | {4,10}      |                  0 |               1.85 |    3 |          |              2
-       14 |               |           2 |      5 |      10 | Material     | {5}         |                  0 |               1.06 |    4 | g        |              1
-       14 |               |           2 |      6 |      11 | HashJoin     | {4,5}       |               1.09 | 1.3575000000000002 |    3 |          |              2
-       14 |               |           2 |      7 |      12 | HashJoin     | {4,5}       |               1.09 | 1.3575000000000002 |    3 |          |              0
-       14 |               |           3 |      8 |      13 | SubqueryScan | {6}         |               1.09 | 1.3575000000000002 |    3 |          |              1
-       14 |               |           3 |      9 |      14 | Unknown      | {6}         |                  0 | 14.925000000000002 |   31 |          |              2
-       14 |               |           3 |     10 |      15 | Unknown      | {6}         |                  0 | 14.925000000000002 |   31 |          |              0
-       14 |               |           4 |     11 |      16 | CteScan      |             |                  0 |               0.62 |   31 | r        |              1
-       14 |               |           4 |     12 |      17 | CteScan      |             |                  0 |               0.62 |   31 |          |              0
-(17 rows)
-
-TRUNCATE TABLE ee.paths, ee.query;
 --
 -- Очистка
 --
-DROP TABLE test_table, t1, t2, t3, graph;
+DROP TABLE test_table, t1, t2, t3;
