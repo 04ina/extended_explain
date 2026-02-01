@@ -82,6 +82,7 @@ static void	mark_old_path_displaced(EEPath *old_eepath, EEPath *new_eepath,
 									PathRowsComparison rowscmp, 
 									PathParallelSafeComparison parallel_safe_cmp);
 static void	mark_new_path_removed(EEPath *new_eepath);
+static void record_projection_paths(EERel *eerel);
 
 
 void
@@ -277,8 +278,6 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 		*/
 		new_eepath = record_eepath(eerel, new_path);
 
-		MemoryContextSwitchTo(old_ctx);
-
 		new_path_pathkeys = new_path->param_info ? NIL : new_path->pathkeys;
 
 		foreach(p1, parent_rel->pathlist)
@@ -291,7 +290,16 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 			PathKeysComparison keyscmp;
 			BMS_Comparison outercmp;	
 
-			
+			/*
+			 * Планировщик может вне функции add_path() заменить некоторые пути из pathlist на ProjectionPath. 
+			 * Если это произошло, мы должны отдельно записать все ProjectionPath.
+			 */
+			if (old_path->type == T_ProjectionPath && !eerel->projection_processed)
+			{
+				record_projection_paths(eerel);
+				eerel->projection_processed = true;
+			}
+
 			costcmp = compare_path_costs_fuzzily(new_path, old_path,
 												fuzz_factor);
 
@@ -426,6 +434,8 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 			*/
 			mark_new_path_removed(new_eepath);
 		}
+
+		MemoryContextSwitchTo(old_ctx);
 	}
 
 	/* Pass call to previous hook. */
@@ -611,7 +621,7 @@ search_eepath(Path *path)
 										   &key,
 										   HASH_FIND,
 										   NULL);
-
+	
 	if (entry)
 		return entry->eepath;
 	else
@@ -675,15 +685,6 @@ record_eepath(EERel * eerel, Path *new_path)
 	EEPath	   *eepath;
 
 	/*
-	 * Находим соответствующее EERel отношение, если оно не было указано в качестве аргумента
-	 *
-	 * Предполагается, что если eerel не указан, то он уже был создан
-	 * ранее.
-	 */
-	if (eerel == NULL)
-		eerel = search_eerel(new_path->parent);
-
-	/*
 	 * Инициализируем и заполняем eepath характеристиками пути
 	 * new_path
 	 */
@@ -725,7 +726,9 @@ record_eepath(EERel * eerel, Path *new_path)
 
 		inner_eerel = search_eerel(GET_INNER_PATH(new_path)->parent);
 
-		/* Связываем eepath с дочернии путями */
+		/* 
+		 *Связываем eepath с дочернии путями 
+		 */
 		eepath->sub_eepath_1 = search_eepath(GET_OUTER_PATH(new_path));
 		if (eepath->sub_eepath_1 == NULL)
 			eepath->sub_eepath_1 = record_eepath(outer_eerel, GET_OUTER_PATH(new_path));
@@ -736,6 +739,25 @@ record_eepath(EERel * eerel, Path *new_path)
 	}
 
 	return eepath;
+}
+
+/*
+ * Функция записи всех ProjectionPath путей, содержащихся в pathlist
+ */
+static void
+record_projection_paths(EERel *eerel)
+{
+	ListCell   *p1;
+
+	foreach(p1, eerel->roi_pointer->pathlist)
+	{
+		Path		*path = (Path *) lfirst(p1);
+
+		if (path->type == T_ProjectionPath)
+		{
+			record_eepath(eerel, path);
+		}
+	}
 }
 
 /* ----------------------------------------------------------------
@@ -756,6 +778,7 @@ create_eerel(RelOptInfo *roi)
 	eerel->width = roi->reltarget->width;
 	eerel->id = global_ee_state->eerel_counter++;
 	eerel->joined_rel_num = bms_num_members(roi->relids);
+	eerel->projection_processed = false; 
 
 	eerel->name = NULL;
 	eerel->alias = NULL;

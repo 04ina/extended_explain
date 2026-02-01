@@ -184,6 +184,11 @@ typedef struct EERel
 	 * Определяет принадлежность путей к конкретному отношению.
 	 */
 	List	   *eepath_list;
+
+	/*
+	 * ProjectionPath записаны?
+	 */
+	bool 		projection_processed;
 }			EERel;
 
 /*
