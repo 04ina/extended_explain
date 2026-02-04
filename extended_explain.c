@@ -6,27 +6,24 @@
  *
  * # TODO:
  *
- * 1. Необходим более надежный однозначный идентификатор для eepath.
- *    На данный момент при поиске eepath по соответствующему пути происходит
- *    по условию, которое не гарантирует однозначную идентификацию: (функция search_eepath)
- *		"eepath->path_pointer == path && 
- *		 eepath->rows == path->rows && 
- *		 eepath->startup_cost == path->startup_cost && 
- *		 eepath->total_cost == path->total_cost"
- *
  *-------------------------------------------------------------------------
  */
 
 #include "include/extended_explain.h"
 #include "include/output_result.h"
 #include "miscadmin.h"
+#include "utils/varlena.h"
+#include "commands/explain_format.h"
 
+#include <math.h>
+#include <float.h>
+
+#include "utils/guc.h"
 #include "commands/defrem.h"
+#include "utils/builtins.h"
 
 #if (PG_VERSION_NUM >= 180000)
 #include "commands/explain_state.h"
-#else
-#include "utils/guc.h"
 #endif
 
 PG_MODULE_MAGIC;
@@ -34,23 +31,35 @@ PG_MODULE_MAGIC;
 #define STD_FUZZ_FACTOR 1.01
 
 #if (PG_VERSION_NUM >= 180000)
-typedef struct 
-{
-	bool		get_paths;
-} extended_explain_options;
 
 static void ee_get_paths_handler(ExplainState *es, DefElem *opt,
 								 ParseState *pstate);
+static void ee_hide_disabled_handler(ExplainState *es, DefElem *opt,
+									 ParseState *pstate);
+static void ee_fixate_paths_handler(ExplainState *es, DefElem *opt,
+									ParseState *pstate);
 
 /*
- * Идентификатор расширения, необходим для реализации EXPLAIN параметра
- * get_paths.  Без указания данного параметра расширение работать не будет.
+ * Идентификатор расширения, необходим для реализации EXPLAIN-параметров.  
  */
 static int	ee_extension_id;
 
 #else
 static bool get_paths;
+static bool hide_disabled;
+static bool enable_fixate_paths;
 #endif
+
+/* Обертка для хранения пары (path_id, rel_id) */ 
+typedef struct RelPathIdPair 
+{
+    int64 level_id;
+	int64 startup_cost;
+	int64 total_cost;
+} RelPathIdPair;
+
+static char *my_guc_string = NULL;   
+static List *my_guc_list = NIL;      
 
 /*
  * Хуки для перехвата путей
@@ -59,6 +68,7 @@ static ExplainOneQuery_hook_type prev_ExplainOneQuery_hook = NULL;
 static add_path_hook_type prev_add_path_hook = NULL;
 static set_rel_pathlist_hook_type prev_set_rel_pathlist_hook = NULL;
 static create_upper_paths_hook_type prev_create_upper_paths_hook = NULL;
+static explain_per_plan_hook_type prev_explain_per_plan_hook = NULL;
 
 /*
  * global_ee_state сохраняет переменные расширения,
@@ -83,7 +93,8 @@ static void	mark_old_path_displaced(EEPath *old_eepath, EEPath *new_eepath,
 									PathParallelSafeComparison parallel_safe_cmp);
 static void	mark_new_path_removed(EEPath *new_eepath);
 static void record_projection_paths(EERel *eerel);
-
+static bool check_my_guc_list(char **newval, void **extra, GucSource source);
+static void assign_my_guc_list(const char *newval, void *extra);
 
 void
 _PG_init(void)
@@ -103,6 +114,8 @@ _PG_init(void)
 	 */
 	ee_extension_id = GetExplainExtensionId("extended_explain");
 	RegisterExtensionExplainOption("get_paths", ee_get_paths_handler);
+	RegisterExtensionExplainOption("hide_disabled", ee_hide_disabled_handler);
+	RegisterExtensionExplainOption("fixate_paths", ee_fixate_paths_handler);
 
 	#else 
 
@@ -121,7 +134,50 @@ _PG_init(void)
 		NULL,
 		NULL);    
 
+	/*
+	 * Определяем GUC переменную hide_disabled 
+	 */
+    DefineCustomBoolVariable(
+        "ee.hide_disabled",
+        "Don't save disabled paths",
+        NULL,
+        &hide_disabled,
+        false,
+        PGC_USERSET,
+        GUC_NOT_IN_SAMPLE,
+        NULL,
+		NULL,
+		NULL);    
+	
+	/*
+	 * Определяем GUC переменную enable_fixate_paths 
+	 */
+    DefineCustomBoolVariable(
+        "ee.enable_fixate_paths",
+        "Enable or disable fixate_paths",
+        NULL,
+        &enable_fixate_paths,
+        false,
+        PGC_USERSET,
+        GUC_NOT_IN_SAMPLE,
+        NULL,
+		NULL,
+		NULL);    
 	#endif
+
+	DefineCustomStringVariable(
+		"ee.fixate_paths",
+		"Make selected paths mandatory to execute",
+		NULL,
+		&my_guc_string,
+		"",
+        PGC_USERSET,
+        GUC_LIST_INPUT,
+		check_my_guc_list,
+		assign_my_guc_list,
+		NULL);
+
+	MarkGUCPrefixReserved("ee");
 
 	prev_ExplainOneQuery_hook = ExplainOneQuery_hook;
 	ExplainOneQuery_hook = ee_explain;
@@ -134,6 +190,9 @@ _PG_init(void)
 
 	prev_create_upper_paths_hook = create_upper_paths_hook;
 	create_upper_paths_hook = ee_process_upper_paths;
+
+	prev_explain_per_plan_hook = explain_per_plan_hook;
+	explain_per_plan_hook = ee_explain_per_plan_hook;
 }
 
 #if (PG_VERSION_NUM >= 180000)
@@ -154,13 +213,49 @@ ee_get_paths_handler(ExplainState *es, DefElem *opt,
 
 	options->get_paths = defGetBoolean(opt);
 }
+
+/*
+ * Функция-обработчик параметра hide_disabled для EXPLAIN
+ */
+static void 
+ee_hide_disabled_handler(ExplainState *es, DefElem *opt,
+						 ParseState *pstate)
+{
+	extended_explain_options *options = GetExplainExtensionState(es, ee_extension_id);
+
+	if (options == NULL)
+	{
+		options = palloc0(sizeof(extended_explain_options));
+		SetExplainExtensionState(es, ee_extension_id, options);
+	}
+
+	options->hide_disabled = defGetBoolean(opt);
+}
+
+/*
+ * Функция-обработчик параметра fixate_paths для EXPLAIN
+ */
+static void 
+ee_fixate_paths_handler(ExplainState *es, DefElem *opt,
+						ParseState *pstate)
+{
+	extended_explain_options *options = GetExplainExtensionState(es, ee_extension_id);
+
+	if (options == NULL)
+	{
+		options = palloc0(sizeof(extended_explain_options));
+		SetExplainExtensionState(es, ee_extension_id, options);
+	}
+
+	options->fixate_paths = defGetBoolean(opt);
+}
 #endif
 
 /*
  * Функция получения значения параметра get_paths.
  */
 static bool
-get_add_paths_setting(struct ExplainState *es)
+get_get_paths_setting(struct ExplainState *es)
 {
 #if (PG_VERSION_NUM >= 180000)
 	extended_explain_options *options;
@@ -171,6 +266,158 @@ get_add_paths_setting(struct ExplainState *es)
 #else
 	return get_paths;
 #endif
+}
+
+/*
+ * Функция получения значения параметра hide_disabled.
+ */
+static bool
+get_hide_disabled_setting(struct ExplainState *es)
+{
+#if (PG_VERSION_NUM >= 180000)
+	extended_explain_options *options;
+
+	options = GetExplainExtensionState(es, ee_extension_id);
+
+	return !(options == NULL || !options->hide_disabled);
+#else
+	return hide_disabled;
+#endif
+}
+
+/*
+ * Функция получения значения параметра enable_fixate_paths/fixate_paths (в зависимости от версии PostgreSQL).
+ */
+static bool
+get_fixate_paths_setting(struct ExplainState *es)
+{
+#if (PG_VERSION_NUM >= 180000)
+	extended_explain_options *options;
+
+	options = GetExplainExtensionState(es, ee_extension_id);
+
+	return !(options == NULL || !options->fixate_paths);
+#else
+	return enable_fixate_paths;
+#endif
+}
+
+static bool
+check_my_guc_list(char **newvalue, void **extra, GucSource source)
+{
+    char       	*rawstring;
+    List       	*elemlist = NIL;
+    ListCell	*lc;
+
+    /* Пустая строка → пустой список (передаём NIL через extra) */
+    if (*newvalue == NULL || (*newvalue)[0] == '\0')
+    {
+        *extra = NIL;
+        return true;
+    }
+
+    rawstring = pstrdup(*newvalue);
+
+    if (!SplitIdentifierString(rawstring, ',', &elemlist))
+    {
+        GUC_check_errdetail("List syntax is invalid.");
+        pfree(rawstring);
+        list_free(elemlist);
+        return false;
+    }
+
+	if (elemlist->length % 3 != 0)
+	{
+        GUC_check_errdetail("List syntax is invalid.");
+        pfree(rawstring);
+        list_free(elemlist);
+        return false;
+	}
+
+    foreach(lc, elemlist)
+    {
+        char   *tok = (char *) lfirst(lc);
+        int64   value;
+        char   *endptr;
+
+        errno = 0;
+        value = strtoll(tok, &endptr, 10);
+
+        if (errno != 0 || *endptr != '\0' || value < 0)
+        {
+            GUC_check_errdetail("Invalid positive integer value: \"%s\"", tok);
+            pfree(rawstring);
+            list_free(elemlist);
+            return false;
+        }
+    }
+
+    pfree(rawstring);
+    list_free(elemlist);
+
+    return true;
+}
+
+static void
+assign_my_guc_list(const char *newvalue, void *extra)
+{
+	MemoryContext old_ctx;
+	ListCell		*lc1;
+	ListCell		*lc2;
+	ListCell		*lc3;
+	RelPathIdPair	*item;
+	List			*parsed_list = NIL;
+	char			*rawstring;
+	List			*elemlist = NIL;
+
+    rawstring = pstrdup(newvalue);
+
+    SplitIdentifierString(rawstring, ',', &elemlist);
+
+	old_ctx = MemoryContextSwitchTo(TopMemoryContext);
+
+	if (elemlist == NIL)
+	{
+		if (my_guc_list != NIL)
+        	list_free_deep(my_guc_list);
+			my_guc_list = NIL;
+		return;
+	}
+
+	lc1 = list_head(elemlist);	
+	lc2 = lnext(elemlist, lc1);
+	lc3 = lnext(elemlist, lc2);
+	while (lc1 != NULL && lc2 != NULL && lc3 != NULL)
+	{
+        char   *endptr;
+        char   *tok1 = (char *) lfirst(lc1);
+        char   *tok2 = (char *) lfirst(lc2);
+        char   *tok3 = (char *) lfirst(lc3);
+		item = (RelPathIdPair *) palloc(sizeof(RelPathIdPair));
+
+		item->level_id = strtoll(tok1, &endptr, 10);
+		item->startup_cost = strtoll(tok2, &endptr, 10);
+		item->total_cost = strtoll(tok3, &endptr, 10);
+
+        parsed_list = lappend(parsed_list, item);
+
+		lc1 = lnext(elemlist, lc3);	
+		lc2 = lnext(elemlist, lc1);
+		lc3 = lnext(elemlist, lc2);
+	}
+
+    if (my_guc_list != NIL)
+	{
+        list_free_deep(my_guc_list);
+		my_guc_list = NIL;
+	}
+    
+	my_guc_list = parsed_list;  /* extra содержит отсортированный список */
+
+	MemoryContextSwitchTo(old_ctx);
+
+    pfree(rawstring);
+    list_free(elemlist);
 }
 
 /* ----------------------------------------------------------------
@@ -205,7 +452,7 @@ create_ee_state(void)
 	ee_state->eerel_by_roi = hash_create("EERel by RelOptInfo*", 32, &ctl, HASH_ELEM | HASH_CONTEXT | HASH_BLOBS);
 
 	memset(&ctl, 0, sizeof(HASHCTL));
-	ctl.keysize = sizeof(uintptr_t) + sizeof(Cardinality) + 2 * sizeof(Cost);
+	ctl.keysize = sizeof(EEPathHashKey);
 	ctl.entrysize = sizeof(EEPathHashEntry);
 	ctl.hcxt = ee_ctx;
 	ee_state->eepath_by_path = hash_create("EEPath by path*", 32, &ctl, HASH_ELEM | HASH_CONTEXT | HASH_BLOBS);
@@ -239,8 +486,13 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 	EEPath 	   *old_eepath;
 	MemoryContext old_ctx;
 
+	instr_time	start;
+	instr_time	duration;
+
 	if (global_ee_state != NULL)
 	{
+		INSTR_TIME_SET_CURRENT(start);
+
 		old_ctx = MemoryContextSwitchTo(ee_ctx);
 
 		if (global_ee_state->cached_current_rel == parent_rel)
@@ -436,6 +688,10 @@ ee_add_path_hook(RelOptInfo *parent_rel,
 		}
 
 		MemoryContextSwitchTo(old_ctx);
+
+		INSTR_TIME_SET_CURRENT(duration);
+		INSTR_TIME_SUBTRACT(duration, start);
+		INSTR_TIME_ADD(global_ee_state->ee_time, duration);
 	}
 
 	/* Pass call to previous hook. */
@@ -452,7 +708,19 @@ ee_explain(Query *query, int cursorOptions,
 		   const char *queryString, ParamListInfo params,
 		   QueryEnvironment *queryEnv)
 {
-	if (get_add_paths_setting(es))
+	bool get_paths_setting = get_get_paths_setting(es);
+	bool hide_disabled_setting = get_hide_disabled_setting(es);
+	bool fixate_paths_setting = get_fixate_paths_setting(es);
+
+	if (hide_disabled_setting && !get_paths_setting)
+	{
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("EXPLAIN option hide_disable requires option get_paths")));
+	}
+
+	if (get_paths_setting || 
+		fixate_paths_setting)	
 	{
 		int64		query_id;
 
@@ -461,15 +729,22 @@ ee_explain(Query *query, int cursorOptions,
 									   ALLOCSET_DEFAULT_SIZES);
 
 		global_ee_state = create_ee_state();
+		global_ee_state->options.get_paths = get_paths_setting;
+		global_ee_state->options.hide_disabled = hide_disabled_setting;
+		global_ee_state->options.fixate_paths = fixate_paths_setting;
 
 		init_eesubquery();
+
+		INSTR_TIME_SET_CURRENT(global_ee_state->start_time);
 
 		standard_ExplainOneQuery(query, cursorOptions, into, es,
 								queryString, params, queryEnv);
 
-		query_id = insert_query_info_into_eequery(queryString);
-
-		insert_paths_into_eepaths(query_id, global_ee_state);
+		if (get_paths_setting)
+		{
+			query_id = insert_query_info_into_eequery(queryString);
+			insert_paths_into_eepaths(query_id, global_ee_state, get_hide_disabled_setting(es));
+		}
 
 		MemoryContextReset(ee_ctx);
 
@@ -499,9 +774,13 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 {
 	MemoryContext old_ctx;
 	EERel	   *eerel;
+	instr_time	start;
+	instr_time	duration;
 
 	if (global_ee_state != NULL)
 	{
+		INSTR_TIME_SET_CURRENT(start);
+
 		old_ctx = MemoryContextSwitchTo(ee_ctx);
 
 		if (global_ee_state->cached_current_rel == rel)
@@ -515,6 +794,10 @@ ee_remember_rel_pathlist(PlannerInfo *root,
 			eerel->alias = pstrdup(rte->alias->aliasname);
 
 		MemoryContextSwitchTo(old_ctx);
+
+		INSTR_TIME_SET_CURRENT(duration);
+		INSTR_TIME_SUBTRACT(duration, start);
+		INSTR_TIME_ADD(global_ee_state->ee_time, duration);
 	}
 
 	/* Pass call to previous hook. */
@@ -547,6 +830,39 @@ ee_process_upper_paths(PlannerInfo *root,
 		(*prev_create_upper_paths_hook) (root, stage, input_rel, output_rel, extra);
 }
 
+/*
+ * Функция-обработчик хука explain_per_plan_hook
+ */
+void
+ee_explain_per_plan_hook(PlannedStmt *plannedstmt,
+						 IntoClause *into,
+						 ExplainState *es,
+						 const char *queryString,
+						 ParamListInfo params,
+						 QueryEnvironment *queryEnv)
+{
+	if (prev_explain_per_plan_hook)
+		(*prev_explain_per_plan_hook) (plannedstmt, into, es, queryString,
+									   params, queryEnv);
+
+	if (global_ee_state)
+	{
+		double plantime;
+
+		INSTR_TIME_SET_CURRENT(global_ee_state->planning_time);
+		INSTR_TIME_SUBTRACT(global_ee_state->planning_time, global_ee_state->start_time);
+		INSTR_TIME_SUBTRACT(global_ee_state->planning_time, global_ee_state->ee_time);
+
+		plantime = INSTR_TIME_GET_DOUBLE(global_ee_state->planning_time);
+
+		ExplainOpenGroup("Extended explain", "Extended explain", false, es);
+
+		ExplainPropertyFloat("Planning time without overhead", "ms", 1000.0 * plantime, 3, es);
+
+		ExplainCloseGroup("Extended explain", "Extended explain", false, es);
+	}
+}
+
 /* ----------------------------------------------------------------
  *				Функции для работы с eepath
  * ----------------------------------------------------------------
@@ -561,9 +877,68 @@ create_eepath(Path *path, EERel *eerel)
 	EEPathHashEntry *entry;
 	EEPathHashKey 	key;
 
-	EEPath	   *eepath = (EEPath *) palloc0(sizeof(EEPath));
+	EEPath	   		*eepath = (EEPath *) palloc0(sizeof(EEPath));
+
+	ListCell   		*lc;
+
+	Path 			*sub_path;
+	EEPath 			*sub_eepath;
+	EERel			*sub_eerel;
+
+	bool 			skip_disable;
 
 	eepath->id = global_ee_state->eepath_counter++;
+
+	if (my_guc_list != NIL && global_ee_state->options.fixate_paths)
+	{
+		foreach(lc, my_guc_list)
+		{
+			RelPathIdPair *pair = (RelPathIdPair *) lfirst(lc);
+
+			skip_disable = false;
+			/* Объединить по join rel num*/
+			if (get_subpath_num(path) == 1 && eerel->joined_rel_num == pair->level_id)
+			{
+				sub_path = GET_SUB_PATH(path);
+				while (bms_num_members(sub_path->parent->relids) == pair->level_id)
+				{
+					sub_eepath = search_eepath(sub_path);
+					if (sub_eepath == NULL)
+					{
+						sub_eerel = search_eerel(sub_path->parent);
+						sub_eepath = record_eepath(sub_eerel, sub_path);
+					}
+
+					if ((int64) floor(100.0 * path->startup_cost + 0.5) == pair->startup_cost && 
+						(int64) floor(100.0 * path->total_cost + 0.5) == pair->total_cost)
+					{
+						skip_disable = true;
+						break;
+					}
+					
+					if (get_subpath_num(sub_path) != 1)
+						break;
+					
+					sub_path = GET_SUB_PATH(sub_path);
+				}
+			}
+		
+			if (((int64) floor(100.0 * path->startup_cost + 0.5) != pair->startup_cost || 
+				(int64) floor(100.0 * path->total_cost + 0.5) != pair->total_cost) &&
+				eerel->joined_rel_num == pair->level_id &&
+				!skip_disable)
+			{
+				path->disabled_nodes++;
+				path->pathkeys = NULL;
+
+				if (path->param_info)
+					path->param_info->ppi_req_outer = NULL;
+
+				path->rows = DBL_MAX;	
+				path->parallel_safe = false;
+			}
+		}		
+	}
 
 	eepath->path_pointer = path;
 	eepath->pathtype = path->pathtype;
@@ -574,7 +949,8 @@ create_eepath(Path *path, EERel *eerel)
 	eepath->rows = path->rows;
 	eepath->startup_cost = path->startup_cost;
 	eepath->total_cost = path->total_cost;
-
+	eepath->disabled_nodes = path->disabled_nodes;
+	
 	eepath->add_path_result = APR_SAVED;
 
 	if (path->type == T_IndexPath)
@@ -585,7 +961,6 @@ create_eepath(Path *path, EERel *eerel)
 	eerel->eepath_list = lappend(eerel->eepath_list, eepath);
 
     key.path_ptr = path;
-	key.rows = path->rows;
 	key.startup_cost = path->startup_cost;
 	key.total_cost = path->total_cost;
     entry = (EEPathHashEntry *) hash_search(global_ee_state->eepath_by_path,
@@ -594,7 +969,6 @@ create_eepath(Path *path, EERel *eerel)
         								   NULL);
 	
 	entry->eepath = eepath;
-
 	return eepath;
 }
 
@@ -613,7 +987,6 @@ search_eepath(Path *path)
 	EEPathHashKey 	key;
 
     key.path_ptr = path;
-	key.rows = path->rows;
 	key.startup_cost = path->startup_cost;
 	key.total_cost = path->total_cost;
 

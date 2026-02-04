@@ -23,7 +23,7 @@
 #include "executor/executor.h"
 #include "catalog/namespace.h"
 
-#define NUM_OF_COLS_EEPATHS 23
+#define NUM_OF_COLS_EEPATHS 24
 
 static const char * 
 cost_cmp_to_string(PathCostComparison cmp)
@@ -214,7 +214,7 @@ get_next_query_id(void)
  * Записывает все пути из ee_state в таблицу ee.paths
  */
 void
-insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
+insert_paths_into_eepaths(int64 query_id, EEState *ee_state, bool hide_disabled)
 {
 	Relation	rel;
 	TupleDesc	tupdesc;
@@ -247,6 +247,9 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 			foreach(eep_lc, eerel->eepath_list)
 			{
 				EEPath	*eepath = (EEPath *) lfirst(eep_lc);
+				
+				if (eepath->disabled_nodes != 0 && hide_disabled)
+					continue;
 
 				/* Get the tuple descriptor for the table */
 				tupdesc = RelationGetDescr(rel);
@@ -360,6 +363,8 @@ insert_paths_into_eepaths(int64 query_id, EEState *ee_state)
 					nulls[21] = true;
 					nulls[22] = true;
 				}
+
+				values[23] = Int32GetDatum(eepath->disabled_nodes);
 
 				/* Создание и вставка тапла */
 				tuple = heap_form_tuple(tupdesc, values, nulls);

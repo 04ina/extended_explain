@@ -105,6 +105,11 @@ CREATE TABLE ee.paths
 	rows_cmp text,
 	parallel_safe_cmp text,
 
+	/*
+	 * Количество отключенных узлов дерева путей
+	 */
+	disabled_nodes integer,
+
 	FOREIGN KEY (query_id) REFERENCES  ee.query(id)
 );
 

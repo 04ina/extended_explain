@@ -107,6 +107,11 @@ typedef struct EEPath
 	Cost		total_cost;
 
 	/*
+	 * Количество отключенных узлов дерева путей
+	 */
+	int			disabled_nodes;
+
+	/*
 	 * Oid индекса, который был использован при чтении таблицы
 	 */
 	Oid			indexoid;
@@ -224,7 +229,6 @@ typedef struct EERelHashEntry
 typedef struct EEPathHashKey
 {
     void		*path_ptr;
-	Cardinality rows;
 	Cost		startup_cost;
 	Cost		total_cost;
 } EEPathHashKey;
@@ -236,10 +240,21 @@ typedef struct EEPathHashEntry
 } EEPathHashEntry;
 
 /*
+ * Опции расширения
+ */
+typedef struct extended_explain_options
+{
+	bool		get_paths;
+	bool		hide_disabled;
+	bool		fixate_paths;
+} extended_explain_options;
+
+/*
  * EEState определяет основные переменные расширения extended_explain
  */
 typedef struct EEState
 {
+
 	/*
 	 * Список запросов/подзапросов.
 	 */
@@ -266,6 +281,11 @@ typedef struct EEState
 	 */
 	int64		init_level;
 
+	/*
+	 * Режим фиксации путей	
+	 */
+	bool 		fixate_path;
+
 	/* 
 	 * Сохраненные RelOptInfo и EERel отношения, 
 	 * которые были обработаны функцией add_path() в последний раз
@@ -275,8 +295,17 @@ typedef struct EEState
 	RelOptInfo	*cached_current_rel;
 	EERel		*cached_current_eerel;
 
-	HTAB	*eerel_by_roi;
-	HTAB	*eepath_by_path;
+	HTAB		*eerel_by_roi;
+	HTAB		*eepath_by_path;
+
+	instr_time	ee_time; 		/* Оверхед расширения */
+	instr_time	planning_time; 	/* Время планирования без оверхеда*/
+	instr_time 	start_time; 	/* Время начала планирования */
+
+	/*
+	 * Опции расширения	
+	 */
+	extended_explain_options options;
 }			EEState;
 
 /*
@@ -318,6 +347,13 @@ extern void ee_process_upper_paths(PlannerInfo *root,
 								   RelOptInfo *input_rel,
 								   RelOptInfo *output_rel,
 								   void *extra);
+
+extern void ee_explain_per_plan_hook(PlannedStmt *plannedstmt,
+							 IntoClause *into,
+							 struct ExplainState *es,
+							 const char *queryString,
+							 ParamListInfo params,
+							 QueryEnvironment *queryEnv);
 
 extern EEState *create_ee_state(void);
 
